@@ -52,6 +52,23 @@ def display(frame: pd.DataFrame, status_columns: list[str]) -> None:
     st.dataframe(styler, use_container_width=True, hide_index=True)
 
 
+def totals_bar(strings: pd.DataFrame, title: str = "สรุปรวม") -> None:
+    """Show consistent project totals immediately above schedule tables."""
+    if strings.empty:
+        return
+    total_modules = int(pd.to_numeric(strings.get("modules"), errors="coerce").fillna(0).sum())
+    total_strings = int(strings["string_id"].nunique()) if "string_id" in strings else len(strings)
+    total_kwp = pd.to_numeric(strings.get("string_kwp"), errors="coerce").fillna(0).sum()
+    passed = int((strings.get("electrical_status", pd.Series(dtype=str)) == "PASS").sum())
+    st.caption(title)
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Total modules", f"{total_modules:,}")
+    c2.metric("Total strings", f"{total_strings:,}")
+    c3.metric("Total module power", f"{total_kwp * 1000:,.0f} W")
+    c4.metric("Total DC", f"{total_kwp:,.2f} kWp")
+    c5.metric("Strings PASS", f"{passed:,}/{total_strings:,}")
+
+
 def init_state() -> None:
     if "module_master" not in st.session_state:
         st.session_state.module_master = DEFAULT_MODULES.copy()
@@ -68,7 +85,7 @@ def init_state() -> None:
         ], columns=["roof_id", "zone", "group_id", "modules", "orientation", "tilt_deg", "azimuth_deg", "shading", "one_way_m"])
 def sync_roof_editor() -> None:
     """Merge DataEditor deltas into an independent persisted dataframe."""
-    changes = st.session_state.get("roof_editor", {})
+    changes = st.session_state.get("roof_editor_v4", {})
     if not isinstance(changes, dict):
         return
     updated = st.session_state.roof_groups.copy().reset_index(drop=True)
@@ -150,7 +167,7 @@ with tab1:
     st.markdown("<div style='background:#fff2cc;border-left:5px solid #d6b656;padding:10px;border-radius:4px'>🟨 <b>ช่องที่ต้องกรอก:</b> Roof ID, Zone, Group ID, จำนวนแผง, Orientation, Tilt, Azimuth, Shading และ One-way cable route. สามารถ copy/paste หลายแถวได้ — ข้อมูลจะถูกเก็บไว้เมื่อหน้า rerun.</div>", unsafe_allow_html=True)
     st.caption("กรอกจาก drone, DWG หรือ survey • one-way cable คือระยะจริงขาเดียว")
     st.data_editor(
-        st.session_state.roof_groups, num_rows="dynamic", use_container_width=True, key="roof_editor",
+        st.session_state.roof_groups, num_rows="dynamic", use_container_width=True, key="roof_editor_v4",
         on_change=sync_roof_editor,
         column_config={
             "roof_id": st.column_config.TextColumn("🟨 Roof ID *", required=True),
@@ -197,14 +214,17 @@ with tab2:
         metrics[1].metric("Nmax design", f"{design['limits']['nmax_design']} modules")
         metrics[2].metric("Nmax absolute", f"{design['limits']['nmax_absolute']} modules")
         metrics[3].metric("Total DC", f"{design['strings']['string_kwp'].sum():,.2f} kWp")
+        totals_bar(design["strings"], "ยอดรวม Candidate Strings")
         display(design["strings"], ["electrical_status"])
 
 with tab3:
     st.subheader("MPPT Assignment ที่เสนอ")
     st.caption("จัด MPPT ก่อน cable และไม่ parallel string ที่จำนวนแผง, orientation หรือ shading ต่างกัน")
+    totals_bar(design["assignments"], "ยอดรวมรายการที่จัด MPPT")
     display(design["assignments"], ["assignment_status", "electrical_status"])
     st.subheader("DC Cable Calculation")
     st.caption("Voltage drop และ Power loss แสดงเป็น % • เปลี่ยนเบอร์สายในหน้า ข้อมูลตั้งต้น แล้วผลจะคำนวณใหม่")
+    totals_bar(design["cables"].merge(design["strings"][["string_id", "modules", "string_kwp", "electrical_status"]], on="string_id", how="left") if not design["cables"].empty else pd.DataFrame(), "ยอดรวม String ที่ตรวจสาย DC")
     display(design["cables"], ["cable_status"])
     if not design["assignments"].empty:
         st.bar_chart(design["assignments"].set_index("string_id")["one_way_m"])
@@ -219,6 +239,12 @@ with tab4:
     display(qa, ["result"])
     st.subheader("PVsyst Export Preparation")
     pvsyst = make_pvsyst_export(project_name, module, inverter, design)
+    if not pvsyst.empty:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("PVsyst total modules", f"{int(pvsyst['total_modules'].sum()):,}")
+        c2.metric("PVsyst sub-arrays", f"{len(pvsyst):,}")
+        c3.metric("PVsyst module power", f"{pvsyst['installed_dc_kwp'].sum() * 1000:,.0f} W")
+        c4.metric("PVsyst installed DC", f"{pvsyst['installed_dc_kwp'].sum():,.2f} kWp")
     display(pvsyst, ["electrical_status", "data_status"])
     st.download_button("ดาวน์โหลด PVsyst preparation CSV", csv_bytes(pvsyst), "pvsyst_preparation.csv", "text/csv")
     package = {"project": project_name, "customer": customer, "module": module, "inverter": inverter,
