@@ -134,6 +134,9 @@ design = calculate_design(
     strings=st.session_state.roof_groups,
 )
 
+for warning in design.get("input_warnings", []):
+    st.warning(warning)
+
 with tab2:
     st.subheader("ขอบเขตจำนวนแผงต่อ String")
     a, b, c, d = st.columns(4)

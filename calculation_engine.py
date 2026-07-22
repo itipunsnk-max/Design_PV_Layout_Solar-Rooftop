@@ -40,8 +40,20 @@ def calculate_design(*, module: dict[str, Any], inverter: dict[str, Any], module
               "nmax_absolute": math.floor(float(inverter["dc_max_v"]) / voc_cold),
               "nmax_design": math.floor(float(inverter["dc_max_v"]) * safety_factor / voc_cold),
               "nmin_mppt": math.ceil(float(inverter["mppt_min_v"]) / vmp_hot)}
+    # Streamlit's dynamic editor can keep an incomplete final row.  Ignore it
+    # deliberately and report it back to the UI; never coerce missing modules to 0.
+    working = strings.copy()
+    working["modules"] = pd.to_numeric(working["modules"], errors="coerce")
+    invalid_modules = working[working["modules"].isna() | (working["modules"] <= 0)]
+    working = working[working["modules"].notna() & (working["modules"] > 0)].copy()
+    input_warnings = []
+    if not invalid_modules.empty:
+        input_warnings.append(f"ข้าม {len(invalid_modules)} แถวที่ไม่มีจำนวนแผงหรือจำนวนแผงไม่ถูกต้อง")
+    if working.empty:
+        return {"limits": limits, "strings": pd.DataFrame(), "assignments": pd.DataFrame(), "cables": pd.DataFrame(), "critical_missing": False, "max_dcac": max_dcac, "input_warnings": input_warnings}
+
     rows = []
-    for i, r in strings.reset_index(drop=True).iterrows():
+    for i, r in working.reset_index(drop=True).iterrows():
         n = int(r["modules"])
         v_cold, v_hot, v_stc = n * voc_cold, n * vmp_hot, n * float(module["vmp_v"])
         status = _status(n >= limits["nmin_mppt"], n <= limits["nmax_design"], v_hot >= inverter["startup_v"], v_hot >= inverter["mppt_min_v"], v_hot <= inverter["mppt_max_v"], v_cold <= inverter["dc_max_v"], float(module["imp_a"]) <= inverter["max_i_input_a"])
@@ -50,7 +62,7 @@ def calculate_design(*, module: dict[str, Any], inverter: dict[str, Any], module
     out = pd.DataFrame(rows)
     assignments = _assign_mppt(out, inverter, inverter_qty)
     cables = _cables(assignments, cable_material, cable_size_mm2, max_voltage_drop, max_dc_loss)
-    return {"limits": limits, "strings": out, "assignments": assignments, "cables": cables, "critical_missing": False, "max_dcac": max_dcac}
+    return {"limits": limits, "strings": out, "assignments": assignments, "cables": cables, "critical_missing": False, "max_dcac": max_dcac, "input_warnings": input_warnings}
 
 
 def _assign_mppt(strings: pd.DataFrame, inverter: dict[str, Any], inverter_qty: int) -> pd.DataFrame:
@@ -79,11 +91,17 @@ def _cables(assignments: pd.DataFrame, material: str, size: float, max_vd: float
     rho = 0.0175 if material == "Copper" else 0.0282
     rows=[]
     for _, r in assignments.iterrows():
-        loop_m = 2 * float(r["one_way_m"])
+        one_way_m = pd.to_numeric(r["one_way_m"], errors="coerce")
+        if pd.isna(one_way_m) or one_way_m < 0:
+            rows.append({"string_id": r.string_id, "one_way_m": None, "loop_m": None, "material": material,
+                         "size_mm2": size, "resistance_ohm": None, "voltage_drop_pct": None,
+                         "power_loss_pct": None, "cable_status": "WARNING: route missing"})
+            continue
+        loop_m = 2 * float(one_way_m)
         resistance = rho * 1.2 * loop_m / size + 0.002
         vd = r.imp_a * resistance / r.vmp_stc_v
         loss = r.imp_a**2 * resistance / (r.string_kwp*1000)
-        rows.append({"string_id":r.string_id,"one_way_m":r.one_way_m,"loop_m":loop_m,"material":material,"size_mm2":size,"resistance_ohm":resistance,"voltage_drop_pct":vd,"power_loss_pct":loss,"cable_status":"PASS" if vd <= max_vd and loss <= max_loss else "WARNING"})
+        rows.append({"string_id":r.string_id,"one_way_m":one_way_m,"loop_m":loop_m,"material":material,"size_mm2":size,"resistance_ohm":resistance,"voltage_drop_pct":vd,"power_loss_pct":loss,"cable_status":"PASS" if vd <= max_vd and loss <= max_loss else "WARNING"})
     return pd.DataFrame(rows)
 
 
