@@ -66,22 +66,31 @@ def init_state() -> None:
             ["RF02", "Lower", "G05", 17, "Portrait", 10, 180, "Low", 60],
             ["RF02", "Lower", "G06", 17, "Portrait", 10, 180, "Low", 65],
         ], columns=["roof_id", "zone", "group_id", "modules", "orientation", "tilt_deg", "azimuth_deg", "shading", "one_way_m"])
-    if "roof_editor" not in st.session_state:
-        st.session_state.roof_editor = st.session_state.roof_groups.copy()
-
-
 def sync_roof_editor() -> None:
-    """Keep pasted/edited rows as the source of truth across Streamlit reruns."""
-    edited = st.session_state.get("roof_editor")
-    if isinstance(edited, pd.DataFrame):
-        st.session_state.roof_groups = edited.copy()
+    """Merge DataEditor deltas into an independent persisted dataframe."""
+    changes = st.session_state.get("roof_editor", {})
+    if not isinstance(changes, dict):
+        return
+    updated = st.session_state.roof_groups.copy().reset_index(drop=True)
+    for row_number, values in changes.get("edited_rows", {}).items():
+        row_number = int(row_number)
+        if row_number < len(updated):
+            for column, value in values.items():
+                if column in updated.columns:
+                    updated.at[row_number, column] = value
+    for values in changes.get("added_rows", []):
+        updated = pd.concat([updated, pd.DataFrame([{column: values.get(column) for column in updated.columns}])], ignore_index=True)
+    deleted_rows = sorted((int(row) for row in changes.get("deleted_rows", [])), reverse=True)
+    for row_number in deleted_rows:
+        if row_number < len(updated):
+            updated = updated.drop(index=row_number)
+    st.session_state.roof_groups = updated.reset_index(drop=True)
 
 
 def apply_pending_auto_layout() -> None:
     pending = st.session_state.pop("pending_auto_layout", None)
     if pending is not None:
         st.session_state.roof_groups = pending.copy()
-        st.session_state.roof_editor = pending.copy()
 
 
 init_state()
@@ -141,7 +150,7 @@ with tab1:
     st.markdown("<div style='background:#fff2cc;border-left:5px solid #d6b656;padding:10px;border-radius:4px'>🟨 <b>ช่องที่ต้องกรอก:</b> Roof ID, Zone, Group ID, จำนวนแผง, Orientation, Tilt, Azimuth, Shading และ One-way cable route. สามารถ copy/paste หลายแถวได้ — ข้อมูลจะถูกเก็บไว้เมื่อหน้า rerun.</div>", unsafe_allow_html=True)
     st.caption("กรอกจาก drone, DWG หรือ survey • one-way cable คือระยะจริงขาเดียว")
     st.data_editor(
-        st.session_state.roof_editor, num_rows="dynamic", use_container_width=True, key="roof_editor",
+        st.session_state.roof_groups, num_rows="dynamic", use_container_width=True, key="roof_editor",
         on_change=sync_roof_editor,
         column_config={
             "roof_id": st.column_config.TextColumn("🟨 Roof ID *", required=True),
