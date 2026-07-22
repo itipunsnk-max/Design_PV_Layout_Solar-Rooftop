@@ -35,9 +35,19 @@ def display(frame: pd.DataFrame, status_columns: list[str]) -> None:
     if frame.empty:
         st.info("ยังไม่มีข้อมูลที่แสดงผล")
         return
-    styler = frame.style
+    display_frame = frame.copy()
+    percent_labels = {
+        "voltage_drop_pct": "Voltage drop (%)",
+        "power_loss_pct": "Power loss (%)",
+        "dc_loss_pct": "DC loss at STC (%)",
+    }
+    for column, label in percent_labels.items():
+        if column in display_frame.columns:
+            display_frame[label] = display_frame[column].map(lambda value: "-" if pd.isna(value) else f"{float(value):.2f}%")
+            display_frame = display_frame.drop(columns=[column])
+    styler = display_frame.style
     for col in status_columns:
-        if col in frame.columns:
+        if col in display_frame.columns:
             styler = styler.map(status_style, subset=[col])
     st.dataframe(styler, use_container_width=True, hide_index=True)
 
@@ -56,9 +66,26 @@ def init_state() -> None:
             ["RF02", "Lower", "G05", 17, "Portrait", 10, 180, "Low", 60],
             ["RF02", "Lower", "G06", 17, "Portrait", 10, 180, "Low", 65],
         ], columns=["roof_id", "zone", "group_id", "modules", "orientation", "tilt_deg", "azimuth_deg", "shading", "one_way_m"])
+    if "roof_editor" not in st.session_state:
+        st.session_state.roof_editor = st.session_state.roof_groups.copy()
+
+
+def sync_roof_editor() -> None:
+    """Keep pasted/edited rows as the source of truth across Streamlit reruns."""
+    edited = st.session_state.get("roof_editor")
+    if isinstance(edited, pd.DataFrame):
+        st.session_state.roof_groups = edited.copy()
+
+
+def apply_pending_auto_layout() -> None:
+    pending = st.session_state.pop("pending_auto_layout", None)
+    if pending is not None:
+        st.session_state.roof_groups = pending.copy()
+        st.session_state.roof_editor = pending.copy()
 
 
 init_state()
+apply_pending_auto_layout()
 st.title("☀️ Solar Rooftop String & MPPT Design Assistant")
 st.caption("ออกแบบเบื้องต้น • แยก Calculation Engine และ Excel/Web Interface • เตรียมข้อมูล PVsyst")
 st.warning("ผลลัพธ์เป็นเครื่องมือช่วยออกแบบเท่านั้น ต้องยืนยันกับ datasheet ล่าสุด มาตรฐาน/การไฟฟ้า สภาพหน้างาน และวิศวกรผู้มีใบอนุญาต")
@@ -111,13 +138,22 @@ with tab1:
         max_dc_loss = st.number_input("DC loss สูงสุด (%)", 0.1, 10.0, 1.5, 0.1) / 100
 
     st.subheader("Roof layout / Candidate strings")
-    st.caption("กรอกจาก drone, DWG หรือ survey • แถวว่างจะถูกข้ามและแจ้งเตือน • one-way cable คือระยะจริงขาเดียว")
-    st.session_state.roof_groups = st.data_editor(
-        st.session_state.roof_groups, num_rows="dynamic", use_container_width=True, key="roof_editor_v2",
-        column_config={"modules": st.column_config.NumberColumn("จำนวนแผง", min_value=1, step=1),
-                       "tilt_deg": st.column_config.NumberColumn("Tilt (deg)", min_value=0, max_value=90),
-                       "azimuth_deg": st.column_config.NumberColumn("Azimuth (deg)", min_value=-180, max_value=360),
-                       "one_way_m": st.column_config.NumberColumn("One-way cable (m)", min_value=0.0)})
+    st.markdown("<div style='background:#fff2cc;border-left:5px solid #d6b656;padding:10px;border-radius:4px'>🟨 <b>ช่องที่ต้องกรอก:</b> Roof ID, Zone, Group ID, จำนวนแผง, Orientation, Tilt, Azimuth, Shading และ One-way cable route. สามารถ copy/paste หลายแถวได้ — ข้อมูลจะถูกเก็บไว้เมื่อหน้า rerun.</div>", unsafe_allow_html=True)
+    st.caption("กรอกจาก drone, DWG หรือ survey • one-way cable คือระยะจริงขาเดียว")
+    st.data_editor(
+        st.session_state.roof_editor, num_rows="dynamic", use_container_width=True, key="roof_editor",
+        on_change=sync_roof_editor,
+        column_config={
+            "roof_id": st.column_config.TextColumn("🟨 Roof ID *", required=True),
+            "zone": st.column_config.TextColumn("🟨 Zone *", required=True),
+            "group_id": st.column_config.TextColumn("🟨 Group ID *", required=True),
+            "modules": st.column_config.NumberColumn("🟨 จำนวนแผง *", min_value=1, step=1, required=True),
+            "orientation": st.column_config.TextColumn("🟨 Orientation *", required=True),
+            "tilt_deg": st.column_config.NumberColumn("🟨 Tilt (deg) *", min_value=0, max_value=90, required=True),
+            "azimuth_deg": st.column_config.NumberColumn("🟨 Azimuth (deg) *", min_value=-180, max_value=360, required=True),
+            "shading": st.column_config.TextColumn("🟨 Shading *", required=True),
+            "one_way_m": st.column_config.NumberColumn("🟨 One-way cable (m) *", min_value=0.0, required=True),
+        })
 
 design = calculate_design(module=module, inverter=inverter, module_power_w=module_power, tmin_c=tmin,
                           tcell_max_c=tcell_max, safety_factor=safety_factor, inverter_qty=inverter_qty_input,
@@ -136,7 +172,7 @@ with tab2:
         st.caption("คำแนะนำเริ่มจาก string ที่ใกล้เคียงกันและอยู่ในช่วงแรงดันที่ผ่าน จากนั้นจึงนำไปแยก MPPT")
         display(auto_groups, [])
         if st.button("ใช้ Auto-layout แทน Candidate strings") and not auto_groups.empty and auto_groups.modules.min() > 0:
-            st.session_state.roof_groups = pd.DataFrame([
+            st.session_state.pending_auto_layout = pd.DataFrame([
                 ["AUTO", "Auto", f"G{i+1:02d}", int(row.modules), "TBC", 0, 0, "TBC", None]
                 for i, row in auto_groups.iterrows()
             ], columns=st.session_state.roof_groups.columns)

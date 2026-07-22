@@ -166,8 +166,27 @@ def make_pvsyst_export(project: str, module: dict[str, Any], inverter: dict[str,
     if strings.empty: return pd.DataFrame()
     merged = strings.merge(cables[["string_id","loop_m","resistance_ohm","power_loss_pct"]], on="string_id", how="left")
     groups=[]
-    for (n, orient), g in merged.groupby(["modules","orientation"], dropna=False):
-        groups.append({"project":project,"sub_array_id":f"PV-{n}M-{orient}","module_manufacturer":module["manufacturer"],"module_model":module["model"],"module_w":module["pmax_w"],"pan_file":module["pan_file"],"modules_in_series":n,"number_of_strings":len(g),"total_modules":int(g.modules.sum()),"installed_dc_kwp":g.string_kwp.sum(),"inverter_model":inverter["model"],"ond_file":inverter["ond_file"],"vmp_hot_v":g.vmp_hot_v.iloc[0],"max_voc_cold_v":g.voc_cold_v.iloc[0],"avg_loop_m":g.loop_m.mean(),"equiv_resistance_ohm":(g.imp_a**2*g.resistance_ohm).sum()/(g.imp_a**2).sum(),"dc_loss_pct":g.power_loss_pct.mean(),"electrical_status":"PASS" if (g.electrical_status=="PASS").all() else "FAIL","data_status":"Requires verification"})
+    # PVsyst sub-arrays must not mix a distinct electrical length or orientation definition.
+    for (n, orient, tilt, azimuth), g in merged.groupby(["modules", "orientation", "tilt_deg", "azimuth_deg"], dropna=False):
+        valid_r = g.dropna(subset=["resistance_ohm", "imp_a"])
+        equivalent_r = ((valid_r.imp_a**2 * valid_r.resistance_ohm).sum() / (valid_r.imp_a**2).sum()) if not valid_r.empty else None
+        cable_ready = len(valid_r) == len(g)
+        groups.append({
+            "project": project,
+            "sub_array_id": f"PV-{n}M-{orient}-{tilt}deg-{azimuth}az",
+            "module_manufacturer": module["manufacturer"], "module_model": module["model"],
+            "module_w": module["pmax_w"], "pan_file": module["pan_file"], "modules_in_series": n,
+            "number_of_strings": len(g), "total_modules": int(g.modules.sum()), "installed_dc_kwp": g.string_kwp.sum(),
+            "inverter_model": inverter["model"], "ond_file": inverter["ond_file"],
+            "orientation": orient, "tilt_deg": tilt, "azimuth_deg": azimuth,
+            "vmp_hot_v": g.vmp_hot_v.iloc[0], "max_voc_cold_v": g.voc_cold_v.iloc[0],
+            "avg_one_way_m": g.one_way_m.mean(), "avg_loop_m": g.loop_m.mean(),
+            "equiv_resistance_ohm": equivalent_r, "dc_loss_pct": g.power_loss_pct.mean(),
+            "cable_method": "Current-weighted equivalent resistance" if cable_ready else "Cable route missing",
+            "electrical_status": "PASS" if (g.electrical_status == "PASS").all() else "FAIL",
+            "data_status": "Requires verification",
+            "comment": "ตรวจ route, topology และค่า ohmic loss ก่อนกรอก PVsyst" if cable_ready else "กรอก one-way cable route ของทุก string ก่อนใช้ค่า loss",
+        })
     return pd.DataFrame(groups)
 
 
