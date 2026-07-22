@@ -25,10 +25,10 @@ def _status(*conditions: bool) -> str:
     return "PASS" if all(conditions) else "FAIL"
 
 
-def recommend_string_groups(total_modules: int, limits: dict[str, Any]) -> pd.DataFrame:
+def recommend_string_groups(total_modules: int, limits: dict[str, Any], module_power_w: float = 0) -> pd.DataFrame:
     """Split a supplied module count into electrically feasible, near-equal strings."""
     if total_modules <= 0 or not limits:
-        return pd.DataFrame(columns=["string_id", "modules", "recommendation"])
+        return pd.DataFrame(columns=["string_id", "modules", "string_kwp", "recommendation"])
     nmin, nmax = limits["nmin_mppt"], limits["nmax_design"]
     string_count = max(1, math.ceil(total_modules / nmax))
     while string_count <= total_modules:
@@ -36,9 +36,10 @@ def recommend_string_groups(total_modules: int, limits: dict[str, Any]) -> pd.Da
         sizes = [base + 1] * remainder + [base] * (string_count - remainder)
         if min(sizes) >= nmin and max(sizes) <= nmax:
             return pd.DataFrame({"string_id": [f"AUTO-S{i+1:02d}" for i in range(string_count)], "modules": sizes,
+                                 "string_kwp": [size * module_power_w / 1000 for size in sizes],
                                  "recommendation": ["นำไปจัด MPPT ต่อ" for _ in sizes]})
         string_count += 1
-    return pd.DataFrame([["", total_modules, "ไม่สามารถจัดเป็น string ที่ผ่านเกณฑ์ได้" ]], columns=["string_id", "modules", "recommendation"])
+    return pd.DataFrame([["", total_modules, total_modules * module_power_w / 1000, "ไม่สามารถจัดเป็น string ที่ผ่านเกณฑ์ได้" ]], columns=["string_id", "modules", "string_kwp", "recommendation"])
 
 
 def inverter_optimisation(total_dc_kwp: float, max_dcac: float, inverter_master: pd.DataFrame) -> pd.DataFrame:

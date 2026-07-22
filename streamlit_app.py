@@ -195,8 +195,13 @@ with tab2:
     if design.get("critical_missing"):
         st.error("ต้องกรอก datasheet inverter ให้ครบก่อนสร้างคำแนะนำ")
     else:
-        auto_groups = recommend_string_groups(total_modules, design["limits"])
+        auto_groups = recommend_string_groups(total_modules, design["limits"], module_power)
         st.caption("คำแนะนำเริ่มจาก string ที่ใกล้เคียงกันและอยู่ในช่วงแรงดันที่ผ่าน จากนั้นจึงนำไปแยก MPPT")
+        if not auto_groups.empty:
+            a1, a2, a3 = st.columns(3)
+            a1.metric("Auto-layout total modules", f"{int(auto_groups['modules'].sum()):,}")
+            a2.metric("Auto-layout total strings", f"{len(auto_groups):,}")
+            a3.metric("Auto-layout total DC", f"{auto_groups['string_kwp'].sum():,.2f} kWp")
         display(auto_groups, [])
         if st.button("ใช้ Auto-layout แทน Candidate strings") and not auto_groups.empty and auto_groups.modules.min() > 0:
             st.session_state.pending_auto_layout = pd.DataFrame([
