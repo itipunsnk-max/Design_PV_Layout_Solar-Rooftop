@@ -25,6 +25,44 @@ def _status(*conditions: bool) -> str:
     return "PASS" if all(conditions) else "FAIL"
 
 
+def recommend_string_groups(total_modules: int, limits: dict[str, Any]) -> pd.DataFrame:
+    """Split a supplied module count into electrically feasible, near-equal strings."""
+    if total_modules <= 0 or not limits:
+        return pd.DataFrame(columns=["string_id", "modules", "recommendation"])
+    nmin, nmax = limits["nmin_mppt"], limits["nmax_design"]
+    string_count = max(1, math.ceil(total_modules / nmax))
+    while string_count <= total_modules:
+        base, remainder = divmod(total_modules, string_count)
+        sizes = [base + 1] * remainder + [base] * (string_count - remainder)
+        if min(sizes) >= nmin and max(sizes) <= nmax:
+            return pd.DataFrame({"string_id": [f"AUTO-S{i+1:02d}" for i in range(string_count)], "modules": sizes,
+                                 "recommendation": ["นำไปจัด MPPT ต่อ" for _ in sizes]})
+        string_count += 1
+    return pd.DataFrame([["", total_modules, "ไม่สามารถจัดเป็น string ที่ผ่านเกณฑ์ได้" ]], columns=["string_id", "modules", "recommendation"])
+
+
+def inverter_optimisation(total_dc_kwp: float, max_dcac: float, inverter_master: pd.DataFrame) -> pd.DataFrame:
+    """Transparent quantity and DC/AC analysis for all verified inverter rows."""
+    rows = []
+    for _, inv in inverter_master.iterrows():
+        ac = pd.to_numeric(inv.get("rated_ac_kw"), errors="coerce")
+        if pd.isna(ac) or ac <= 0:
+            rows.append({"inverter_id": inv["inverter_id"], "recommended_qty": None, "dc_ac_ratio": None,
+                         "status": "REQUIRES VERIFICATION", "comment": "ไม่มี Rated AC kW ที่ยืนยันแล้ว"})
+            continue
+        quantity = max(1, math.ceil(total_dc_kwp / (float(ac) * max_dcac)))
+        ratio = total_dc_kwp / (float(ac) * quantity)
+        if ratio < 0.80:
+            status, comment = "WARNING", "DC/AC ratio ต่ำกว่า 0.80 — พิจารณาลดจำนวน inverter หรือทบทวน redundancy"
+        elif ratio > max_dcac:
+            status, comment = "FAIL", "DC/AC ratio เกินเกณฑ์ที่กำหนด"
+        else:
+            status, comment = "PASS", "อยู่ในเกณฑ์ DC/AC ที่ตั้งไว้; ต้องตรวจ MPPT และ AC system ต่อ"
+        rows.append({"inverter_id": inv["inverter_id"], "recommended_qty": quantity, "dc_ac_ratio": ratio,
+                     "status": status, "comment": comment})
+    return pd.DataFrame(rows)
+
+
 def calculate_design(*, module: dict[str, Any], inverter: dict[str, Any], module_power_w: float,
                      tmin_c: float, tcell_max_c: float, safety_factor: float, inverter_qty: int,
                      max_dcac: float, cable_material: str, cable_size_mm2: float, max_voltage_drop: float,
@@ -57,8 +95,9 @@ def calculate_design(*, module: dict[str, Any], inverter: dict[str, Any], module
         n = int(r["modules"])
         v_cold, v_hot, v_stc = n * voc_cold, n * vmp_hot, n * float(module["vmp_v"])
         status = _status(n >= limits["nmin_mppt"], n <= limits["nmax_design"], v_hot >= inverter["startup_v"], v_hot >= inverter["mppt_min_v"], v_hot <= inverter["mppt_max_v"], v_cold <= inverter["dc_max_v"], float(module["imp_a"]) <= inverter["max_i_input_a"])
+        comment = "ผ่านช่วงแรงดันและกระแส" if status == "PASS" else "ปรับจำนวนแผง/String หรือเลือกรุ่น inverter ที่มีช่วงแรงดัน/กระแสเหมาะสม"
         rows.append({"string_id":f"S{i+1:02d}", **r.to_dict(), "string_kwp":n*module_power_w/1000,
-                     "voc_cold_v":v_cold,"vmp_hot_v":v_hot,"vmp_stc_v":v_stc,"imp_a":module["imp_a"],"isc_a":module["isc_a"],"electrical_status":status})
+                     "voc_cold_v":v_cold,"vmp_hot_v":v_hot,"vmp_stc_v":v_stc,"imp_a":module["imp_a"],"isc_a":module["isc_a"],"electrical_status":status,"comment":comment})
     out = pd.DataFrame(rows)
     assignments = _assign_mppt(out, inverter, inverter_qty)
     cables = _cables(assignments, cable_material, cable_size_mm2, max_voltage_drop, max_dc_loss)
@@ -79,10 +118,10 @@ def _assign_mppt(strings: pd.DataFrame, inverter: dict[str, Any], inverter_qty: 
             if same and len(items) < inverter["inputs_per_mppt"] and current_ok: valid.append(slot)
         slot = min(valid, key=lambda x: len(x["items"])) if valid else None
         if slot is None:
-            rows.append({**string.to_dict(),"inverter_id":"UNASSIGNED","mppt_no":None,"input_no":None,"assignment_status":"FAIL: no compatible MPPT"})
+            rows.append({**string.to_dict(),"inverter_id":"UNASSIGNED","mppt_no":None,"input_no":None,"assignment_status":"FAIL","comment":"ไม่มี MPPT ที่เข้ากัน: เพิ่ม inverter/MPPT หรืออย่าขนาน string ต่างจำนวน/ทิศ/เงา"})
         else:
             slot["items"].append(string)
-            rows.append({**string.to_dict(),"inverter_id":slot["inverter_id"],"mppt_no":slot["mppt_no"],"input_no":len(slot["items"]),"assignment_status":"PASS"})
+            rows.append({**string.to_dict(),"inverter_id":slot["inverter_id"],"mppt_no":slot["mppt_no"],"input_no":len(slot["items"]),"assignment_status":"PASS","comment":"จัดบน MPPT ที่มีจำนวนแผง/ทิศ/เงาเดียวกัน"})
     return pd.DataFrame(rows)
 
 
@@ -95,13 +134,15 @@ def _cables(assignments: pd.DataFrame, material: str, size: float, max_vd: float
         if pd.isna(one_way_m) or one_way_m < 0:
             rows.append({"string_id": r.string_id, "one_way_m": None, "loop_m": None, "material": material,
                          "size_mm2": size, "resistance_ohm": None, "voltage_drop_pct": None,
-                         "power_loss_pct": None, "cable_status": "WARNING: route missing"})
+                         "power_loss_pct": None, "cable_status": "WARNING", "comment": "กรอกระยะ one-way cable route ก่อนตรวจ loss"})
             continue
         loop_m = 2 * float(one_way_m)
         resistance = rho * 1.2 * loop_m / size + 0.002
         vd = r.imp_a * resistance / r.vmp_stc_v
         loss = r.imp_a**2 * resistance / (r.string_kwp*1000)
-        rows.append({"string_id":r.string_id,"one_way_m":one_way_m,"loop_m":loop_m,"material":material,"size_mm2":size,"resistance_ohm":resistance,"voltage_drop_pct":vd,"power_loss_pct":loss,"cable_status":"PASS" if vd <= max_vd and loss <= max_loss else "WARNING"})
+        status = "PASS" if vd <= max_vd and loss <= max_loss else "WARNING"
+        comment = "ผ่านเกณฑ์สาย DC" if status == "PASS" else "เพิ่มขนาดสาย / ลดระยะ route / ตรวจ route จริง"
+        rows.append({"string_id":r.string_id,"one_way_m":one_way_m,"loop_m":loop_m,"material":material,"size_mm2":size,"resistance_ohm":resistance,"voltage_drop_pct":vd * 100,"power_loss_pct":loss * 100,"cable_status":status,"comment":comment})
     return pd.DataFrame(rows)
 
 
