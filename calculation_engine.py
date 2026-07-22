@@ -101,7 +101,12 @@ def calculate_design(*, module: dict[str, Any], inverter: dict[str, Any], module
     out = pd.DataFrame(rows)
     assignments = _assign_mppt(out, inverter, inverter_qty)
     cables = _cables(assignments, cable_material, cable_size_mm2, max_voltage_drop, max_dc_loss)
-    return {"limits": limits, "strings": out, "assignments": assignments, "cables": cables, "critical_missing": False, "max_dcac": max_dcac, "input_warnings": input_warnings}
+    total_dc_kwp = float(out["string_kwp"].sum())
+    total_ac_kw = float(inverter["rated_ac_kw"]) * inverter_qty
+    return {"limits": limits, "strings": out, "assignments": assignments, "cables": cables,
+            "critical_missing": False, "max_dcac": max_dcac, "input_warnings": input_warnings,
+            "total_dc_kwp": total_dc_kwp, "total_ac_kw": total_ac_kw,
+            "actual_dcac_ratio": total_dc_kwp / total_ac_kw if total_ac_kw else None}
 
 
 def _assign_mppt(strings: pd.DataFrame, inverter: dict[str, Any], inverter_qty: int) -> pd.DataFrame:
@@ -174,11 +179,11 @@ def make_pvsyst_export(project: str, module: dict[str, Any], inverter: dict[str,
         groups.append({
             "project": project,
             "sub_array_id": f"PV-{n}M-{orient}-{tilt}deg-{azimuth}az",
+            "orientation": orient, "tilt_deg": tilt, "azimuth_deg": azimuth,
             "module_manufacturer": module["manufacturer"], "module_model": module["model"],
             "module_w": module["pmax_w"], "pan_file": module["pan_file"], "modules_in_series": n,
             "number_of_strings": len(g), "total_modules": int(g.modules.sum()), "installed_dc_kwp": g.string_kwp.sum(),
             "inverter_model": inverter["model"], "ond_file": inverter["ond_file"],
-            "orientation": orient, "tilt_deg": tilt, "azimuth_deg": azimuth,
             "vmp_hot_v": g.vmp_hot_v.iloc[0], "max_voc_cold_v": g.voc_cold_v.iloc[0],
             "avg_one_way_m": g.one_way_m.mean(), "avg_loop_m": g.loop_m.mean(),
             "equiv_resistance_ohm": equivalent_r, "dc_loss_pct": g.power_loss_pct.mean(),

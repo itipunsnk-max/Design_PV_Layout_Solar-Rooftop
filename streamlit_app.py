@@ -45,6 +45,7 @@ def display(frame: pd.DataFrame, status_columns: list[str]) -> None:
         if column in display_frame.columns:
             display_frame[label] = display_frame[column].map(lambda value: "-" if pd.isna(value) else f"{float(value):.2f}%")
             display_frame = display_frame.drop(columns=[column])
+    display_frame = display_frame.rename(columns={"tilt_deg": "Tilt (deg)", "azimuth_deg": "Azimuth (deg)", "avg_one_way_m": "Average one-way cable (m)", "avg_loop_m": "Average loop cable (m)"})
     styler = display_frame.style
     for col in status_columns:
         if col in display_frame.columns:
@@ -52,7 +53,7 @@ def display(frame: pd.DataFrame, status_columns: list[str]) -> None:
     st.dataframe(styler, use_container_width=True, hide_index=True)
 
 
-def totals_bar(strings: pd.DataFrame, title: str = "สรุปรวม") -> None:
+def totals_bar(strings: pd.DataFrame, title: str = "สรุปรวม", total_ac_kw: float | None = None) -> None:
     """Show consistent project totals immediately above schedule tables."""
     if strings.empty:
         return
@@ -64,7 +65,7 @@ def totals_bar(strings: pd.DataFrame, title: str = "สรุปรวม") -> N
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Total modules", f"{total_modules:,}")
     c2.metric("Total strings", f"{total_strings:,}")
-    c3.metric("Total module power", f"{total_kwp * 1000:,.0f} W")
+    c3.metric("Total AC capacity", f"{total_ac_kw * 1000:,.0f} W" if total_ac_kw is not None else "-")
     c4.metric("Total DC", f"{total_kwp:,.2f} kWp")
     c5.metric("Strings PASS", f"{passed:,}/{total_strings:,}")
 
@@ -214,17 +215,17 @@ with tab2:
         metrics[1].metric("Nmax design", f"{design['limits']['nmax_design']} modules")
         metrics[2].metric("Nmax absolute", f"{design['limits']['nmax_absolute']} modules")
         metrics[3].metric("Total DC", f"{design['strings']['string_kwp'].sum():,.2f} kWp")
-        totals_bar(design["strings"], "ยอดรวม Candidate Strings")
+        totals_bar(design["strings"], "ยอดรวม Candidate Strings", design.get("total_ac_kw"))
         display(design["strings"], ["electrical_status"])
 
 with tab3:
     st.subheader("MPPT Assignment ที่เสนอ")
     st.caption("จัด MPPT ก่อน cable และไม่ parallel string ที่จำนวนแผง, orientation หรือ shading ต่างกัน")
-    totals_bar(design["assignments"], "ยอดรวมรายการที่จัด MPPT")
+    totals_bar(design["assignments"], "ยอดรวมรายการที่จัด MPPT", design.get("total_ac_kw"))
     display(design["assignments"], ["assignment_status", "electrical_status"])
     st.subheader("DC Cable Calculation")
     st.caption("Voltage drop และ Power loss แสดงเป็น % • เปลี่ยนเบอร์สายในหน้า ข้อมูลตั้งต้น แล้วผลจะคำนวณใหม่")
-    totals_bar(design["cables"].merge(design["strings"][["string_id", "modules", "string_kwp", "electrical_status"]], on="string_id", how="left") if not design["cables"].empty else pd.DataFrame(), "ยอดรวม String ที่ตรวจสาย DC")
+    totals_bar(design["cables"].merge(design["strings"][["string_id", "modules", "string_kwp", "electrical_status"]], on="string_id", how="left") if not design["cables"].empty else pd.DataFrame(), "ยอดรวม String ที่ตรวจสาย DC", design.get("total_ac_kw"))
     display(design["cables"], ["cable_status"])
     if not design["assignments"].empty:
         st.bar_chart(design["assignments"].set_index("string_id")["one_way_m"])
@@ -243,7 +244,7 @@ with tab4:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("PVsyst total modules", f"{int(pvsyst['total_modules'].sum()):,}")
         c2.metric("PVsyst sub-arrays", f"{len(pvsyst):,}")
-        c3.metric("PVsyst module power", f"{pvsyst['installed_dc_kwp'].sum() * 1000:,.0f} W")
+        c3.metric("PVsyst AC capacity", f"{design.get('total_ac_kw', 0) * 1000:,.0f} W")
         c4.metric("PVsyst installed DC", f"{pvsyst['installed_dc_kwp'].sum():,.2f} kWp")
     display(pvsyst, ["electrical_status", "data_status"])
     st.download_button("ดาวน์โหลด PVsyst preparation CSV", csv_bytes(pvsyst), "pvsyst_preparation.csv", "text/csv")
