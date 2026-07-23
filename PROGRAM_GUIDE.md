@@ -275,6 +275,11 @@ Power loss (%) = Imp² × R / String power × 100
 - `1.2` คือ temperature factor
 - `0.002 Ω` คือ connector allowance
 
+ในหน้า **สูตรคำนวณ** มีตารางตรวจสอบราย String แสดง One-way/Loop length,
+ค่า ρ, temperature factor, ขนาดสาย, ความต้านทานตัวนำ, connector allowance
+และความต้านทานรวม โดย `Formula check = PASS` เมื่อผลรวมองค์ประกอบตรงกับ
+ค่า `Total R` ที่ Calculation Engine ใช้
+
 ## 7. Output
 
 | Output | รายละเอียด |

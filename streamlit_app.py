@@ -395,9 +395,68 @@ with tab5:
 | Voltage drop | `I × R / String Vmp × 100` | ≤ เกณฑ์ที่ตั้ง (%) |
 | Power loss | `I² × R / String power × 100` | ≤ เกณฑ์ที่ตั้ง (%) |
 """)
+    st.subheader("ตรวจสอบค่าความต้านทานสาย DC")
+    st.caption(
+        "R_total = ρ × Temperature factor × Loop length ÷ Area "
+        "+ Connector allowance โดย Loop length = 2 × One-way cable"
+    )
+    if design["cables"].empty:
+        st.info("ยังไม่มีข้อมูลสาย DC สำหรับตรวจสอบ")
+    else:
+        cable_resistance_check = design["cables"][[
+            "string_id", "inverter_id", "one_way_m", "loop_m", "material",
+            "resistivity_ohm_mm2_m", "temperature_factor", "size_mm2",
+            "conductor_resistance_ohm", "connector_allowance_ohm",
+            "resistance_ohm",
+        ]].copy()
+        cable_resistance_check["formula_check"] = cable_resistance_check.apply(
+            lambda row: (
+                "WAITING FOR ROUTE"
+                if pd.isna(row["resistance_ohm"])
+                else (
+                    "PASS"
+                    if abs(
+                        row["conductor_resistance_ohm"]
+                        + row["connector_allowance_ohm"]
+                        - row["resistance_ohm"]
+                    ) < 1e-12
+                    else "FAIL"
+                )
+            ),
+            axis=1,
+        )
+        cable_resistance_check = cable_resistance_check.rename(columns={
+            "one_way_m": "One-way (m)",
+            "loop_m": "Loop (m)",
+            "resistivity_ohm_mm2_m": "ρ (Ω·mm²/m)",
+            "temperature_factor": "Temp. factor",
+            "size_mm2": "Area (mm²)",
+            "conductor_resistance_ohm": "Conductor R (Ω)",
+            "connector_allowance_ohm": "Connector R (Ω)",
+            "resistance_ohm": "Total R (Ω)",
+            "formula_check": "Formula check",
+        })
+        resistance_styler = cable_resistance_check.style.format(
+            {
+                "One-way (m)": "{:,.2f}",
+                "Loop (m)": "{:,.2f}",
+                "ρ (Ω·mm²/m)": "{:.6f}",
+                "Temp. factor": "{:.3f}",
+                "Area (mm²)": "{:,.2f}",
+                "Conductor R (Ω)": "{:.6f}",
+                "Connector R (Ω)": "{:.6f}",
+                "Total R (Ω)": "{:.6f}",
+            },
+            na_rep="-",
+        ).map(status_style, subset=["Formula check"])
+        st.dataframe(resistance_styler, width="stretch", hide_index=True)
     if not design.get("critical_missing"):
         st.json({"current_inputs": {"Voc cold V": design["limits"]["voc_cold_v"], "Vmp hot V": design["limits"]["vmp_hot_v"],
                                            "Nmin MPPT": design["limits"]["nmin_mppt"], "Nmax design": design["limits"]["nmax_design"],
+                                           "Cable material": cable_material,
+                                           "Cable resistivity Ω·mm²/m": 0.0175 if cable_material == "Copper" else 0.0282,
+                                           "Cable temperature factor": 1.2,
+                                           "Connector allowance Ω": 0.002,
                                            "Cable mm2": cable_size}})
 
 with tab6:

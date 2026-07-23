@@ -22,6 +22,12 @@ def test_sample_strings_are_calculated_and_assigned():
     assert result["strings"].iloc[0]["electrical_status"] == "PASS"
     assert result["assignments"].iloc[0]["assignment_status"] == "PASS"
     assert result["assignments"].iloc[0]["source_row"] == 0
+    cable = result["cables"].iloc[0]
+    assert abs(
+        cable["conductor_resistance_ohm"]
+        + cable["connector_allowance_ohm"]
+        - cable["resistance_ohm"]
+    ) < 1e-12
 
 
 def test_blank_editor_row_is_ignored_without_crashing():

@@ -229,24 +229,36 @@ def _summarize_inverters(assignments: pd.DataFrame, inverter: dict[str, Any],
 def _cables(assignments: pd.DataFrame, material: str, size: float, max_vd: float, max_loss: float) -> pd.DataFrame:
     if assignments.empty: return pd.DataFrame()
     rho = 0.0175 if material == "Copper" else 0.0282
+    temperature_factor = 1.2
+    connector_allowance = 0.002
     rows=[]
     for _, r in assignments.iterrows():
         one_way_m = pd.to_numeric(r["one_way_m"], errors="coerce")
         if pd.isna(one_way_m) or one_way_m < 0:
             rows.append({"string_id": r.string_id, "inverter_id": r.inverter_id,
                          "one_way_m": None, "loop_m": None, "material": material,
-                         "size_mm2": size, "resistance_ohm": None, "voltage_drop_pct": None,
+                         "resistivity_ohm_mm2_m": rho,
+                         "temperature_factor": temperature_factor,
+                         "size_mm2": size, "conductor_resistance_ohm": None,
+                         "connector_allowance_ohm": connector_allowance,
+                         "resistance_ohm": None, "voltage_drop_pct": None,
                          "power_loss_pct": None, "cable_status": "WARNING", "comment": "กรอกระยะ one-way cable route ก่อนตรวจ loss"})
             continue
         loop_m = 2 * float(one_way_m)
-        resistance = rho * 1.2 * loop_m / size + 0.002
+        conductor_resistance = rho * temperature_factor * loop_m / size
+        resistance = conductor_resistance + connector_allowance
         vd = r.imp_a * resistance / r.vmp_stc_v
         loss = r.imp_a**2 * resistance / (r.string_kwp*1000)
         status = "PASS" if vd <= max_vd and loss <= max_loss else "WARNING"
         comment = "ผ่านเกณฑ์สาย DC" if status == "PASS" else "เพิ่มขนาดสาย / ลดระยะ route / ตรวจ route จริง"
         rows.append({"string_id":r.string_id,"inverter_id":r.inverter_id,
                      "one_way_m":one_way_m,"loop_m":loop_m,"material":material,
-                     "size_mm2":size,"resistance_ohm":resistance,
+                     "resistivity_ohm_mm2_m":rho,
+                     "temperature_factor":temperature_factor,
+                     "size_mm2":size,
+                     "conductor_resistance_ohm":conductor_resistance,
+                     "connector_allowance_ohm":connector_allowance,
+                     "resistance_ohm":resistance,
                      "voltage_drop_pct":vd * 100,"power_loss_pct":loss * 100,
                      "cable_status":status,"comment":comment})
     return pd.DataFrame(rows)
