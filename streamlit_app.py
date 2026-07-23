@@ -274,7 +274,7 @@ with tab1:
         )
         candidate_editor_frame.loc[invalid_overrides, "inverter_override"] = "AUTO"
     candidate_editor_frame.insert(
-        candidate_editor_frame.columns.get_loc("inverter_override") + 1,
+        candidate_editor_frame.columns.get_loc("one_way_m") + 1,
         "inverter_id",
         [inverter_by_row.get(row_no, "-") for row_no in candidate_editor_frame.index],
     )
@@ -327,6 +327,16 @@ with tab1:
         f"R{st.session_state.roof_editor_revision}"
     )
     with st.form("roof_candidate_form", clear_on_submit=False):
+        roof_submitted_top = st.form_submit_button(
+            "✅ บันทึกและคำนวณข้อมูลที่ Paste",
+            type="primary",
+            use_container_width=True,
+        )
+        st.caption(
+            "ลำดับ Paste จาก Excel: Roof ID, Zone, Group ID, จำนวนแผง, "
+            "kWp, Inverter, Orientation, Tilt, Azimuth, Shading, One-way cable "
+            "• kWp/Assigned Inverter จะคำนวณใหม่หลัง Submit"
+        )
         candidate_editor_styler = candidate_editor_frame.style.map(
             inverter_cell_style,
             subset=["inverter_id"],
@@ -360,11 +370,12 @@ with tab1:
                     help="เว้นว่างได้ โปรแกรมจะคำนวณ String ก่อนและแจ้งเตือนส่วนสาย DC",
                 ),
             })
-        roof_submitted = st.form_submit_button(
+        roof_submitted_bottom = st.form_submit_button(
             "✅ บันทึกข้อมูลและคำนวณใหม่",
             type="primary",
             use_container_width=True,
         )
+        roof_submitted = roof_submitted_top or roof_submitted_bottom
     if roof_submitted:
         edited_roof_groups = (
             edited_candidate_frame.reindex(columns=ROOF_COLUMNS)
