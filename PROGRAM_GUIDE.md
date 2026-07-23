@@ -277,8 +277,14 @@ Power loss (%) = Imp² × R / String power × 100
 
 ในหน้า **สูตรคำนวณ** มีตารางตรวจสอบราย String แสดง One-way/Loop length,
 ค่า ρ, temperature factor, ขนาดสาย, ความต้านทานตัวนำ, connector allowance
-และความต้านทานรวม โดย `Formula check = PASS` เมื่อผลรวมองค์ประกอบตรงกับ
-ค่า `Total R` ที่ Calculation Engine ใช้
+และความต้านทานรวม พร้อมตรวจ Voltage drop ทั้งหน่วย V และ %:
+
+```text
+Voltage drop (V) = Imp × Total R
+Voltage drop (%) = Voltage drop (V) / String Vmp × 100
+```
+
+ตารางแสดงค่า Limit (%) และ `VD check = PASS/WARNING` ราย String
 
 ## 7. Output
 

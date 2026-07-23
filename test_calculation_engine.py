@@ -28,6 +28,14 @@ def test_sample_strings_are_calculated_and_assigned():
         + cable["connector_allowance_ohm"]
         - cable["resistance_ohm"]
     ) < 1e-12
+    assert abs(
+        cable["imp_a"] * cable["resistance_ohm"]
+        - cable["voltage_drop_v"]
+    ) < 1e-12
+    assert abs(
+        cable["voltage_drop_v"] / cable["string_vmp_v"] * 100
+        - cable["voltage_drop_pct"]
+    ) < 1e-12
 
 
 def test_blank_editor_row_is_ignored_without_crashing():

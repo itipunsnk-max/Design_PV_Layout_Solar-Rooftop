@@ -392,13 +392,15 @@ with tab5:
 | Nmax design | `FLOOR(Max DC voltage × safety factor / Voc_cold)` | ขีดจำกัดออกแบบที่มี margin |
 | Nmin MPPT | `CEILING(MPPT min voltage / Vmp_hot)` | จำนวนแผงขั้นต่ำ/string |
 | Cable resistance | `R = rho × temperature factor × loop length / area + connector allowance` | ใช้ loop length ไม่ใช่ one-way |
-| Voltage drop | `I × R / String Vmp × 100` | ≤ เกณฑ์ที่ตั้ง (%) |
+| Voltage drop (V) | `ΔV = I × R` | แรงดันตกคร่อมสายหน่วย V |
+| Voltage drop (%) | `ΔV / String Vmp × 100` | ≤ เกณฑ์ที่ตั้ง (%) |
 | Power loss | `I² × R / String power × 100` | ≤ เกณฑ์ที่ตั้ง (%) |
 """)
-    st.subheader("ตรวจสอบค่าความต้านทานสาย DC")
+    st.subheader("ตรวจสอบความต้านทานและ Voltage Drop สาย DC")
     st.caption(
         "R_total = ρ × Temperature factor × Loop length ÷ Area "
-        "+ Connector allowance โดย Loop length = 2 × One-way cable"
+        "+ Connector allowance • ΔV = Imp × R_total • "
+        "Voltage drop (%) = ΔV ÷ String Vmp × 100"
     )
     if design["cables"].empty:
         st.info("ยังไม่มีข้อมูลสาย DC สำหรับตรวจสอบ")
@@ -407,24 +409,10 @@ with tab5:
             "string_id", "inverter_id", "one_way_m", "loop_m", "material",
             "resistivity_ohm_mm2_m", "temperature_factor", "size_mm2",
             "conductor_resistance_ohm", "connector_allowance_ohm",
-            "resistance_ohm",
+            "resistance_ohm", "imp_a", "string_vmp_v",
+            "voltage_drop_v", "voltage_drop_pct",
+            "voltage_drop_limit_pct", "voltage_drop_status",
         ]].copy()
-        cable_resistance_check["formula_check"] = cable_resistance_check.apply(
-            lambda row: (
-                "WAITING FOR ROUTE"
-                if pd.isna(row["resistance_ohm"])
-                else (
-                    "PASS"
-                    if abs(
-                        row["conductor_resistance_ohm"]
-                        + row["connector_allowance_ohm"]
-                        - row["resistance_ohm"]
-                    ) < 1e-12
-                    else "FAIL"
-                )
-            ),
-            axis=1,
-        )
         cable_resistance_check = cable_resistance_check.rename(columns={
             "one_way_m": "One-way (m)",
             "loop_m": "Loop (m)",
@@ -434,7 +422,12 @@ with tab5:
             "conductor_resistance_ohm": "Conductor R (Ω)",
             "connector_allowance_ohm": "Connector R (Ω)",
             "resistance_ohm": "Total R (Ω)",
-            "formula_check": "Formula check",
+            "imp_a": "Imp (A)",
+            "string_vmp_v": "String Vmp (V)",
+            "voltage_drop_v": "Voltage drop (V)",
+            "voltage_drop_pct": "Voltage drop (%)",
+            "voltage_drop_limit_pct": "Limit (%)",
+            "voltage_drop_status": "VD check",
         })
         resistance_styler = cable_resistance_check.style.format(
             {
@@ -446,9 +439,14 @@ with tab5:
                 "Conductor R (Ω)": "{:.6f}",
                 "Connector R (Ω)": "{:.6f}",
                 "Total R (Ω)": "{:.6f}",
+                "Imp (A)": "{:.3f}",
+                "String Vmp (V)": "{:.3f}",
+                "Voltage drop (V)": "{:.3f}",
+                "Voltage drop (%)": "{:.3f}",
+                "Limit (%)": "{:.3f}",
             },
             na_rep="-",
-        ).map(status_style, subset=["Formula check"])
+        ).map(status_style, subset=["VD check"])
         st.dataframe(resistance_styler, width="stretch", hide_index=True)
     if not design.get("critical_missing"):
         st.json({"current_inputs": {"Voc cold V": design["limits"]["voc_cold_v"], "Vmp hot V": design["limits"]["vmp_hot_v"],

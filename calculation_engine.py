@@ -241,14 +241,20 @@ def _cables(assignments: pd.DataFrame, material: str, size: float, max_vd: float
                          "temperature_factor": temperature_factor,
                          "size_mm2": size, "conductor_resistance_ohm": None,
                          "connector_allowance_ohm": connector_allowance,
-                         "resistance_ohm": None, "voltage_drop_pct": None,
+                         "resistance_ohm": None, "imp_a": r.imp_a,
+                         "string_vmp_v": r.vmp_stc_v,
+                         "voltage_drop_v": None, "voltage_drop_pct": None,
+                         "voltage_drop_limit_pct": max_vd * 100,
+                         "voltage_drop_status": "WARNING",
                          "power_loss_pct": None, "cable_status": "WARNING", "comment": "กรอกระยะ one-way cable route ก่อนตรวจ loss"})
             continue
         loop_m = 2 * float(one_way_m)
         conductor_resistance = rho * temperature_factor * loop_m / size
         resistance = conductor_resistance + connector_allowance
-        vd = r.imp_a * resistance / r.vmp_stc_v
+        voltage_drop_v = r.imp_a * resistance
+        vd = voltage_drop_v / r.vmp_stc_v
         loss = r.imp_a**2 * resistance / (r.string_kwp*1000)
+        voltage_drop_status = "PASS" if vd <= max_vd else "WARNING"
         status = "PASS" if vd <= max_vd and loss <= max_loss else "WARNING"
         comment = "ผ่านเกณฑ์สาย DC" if status == "PASS" else "เพิ่มขนาดสาย / ลดระยะ route / ตรวจ route จริง"
         rows.append({"string_id":r.string_id,"inverter_id":r.inverter_id,
@@ -258,8 +264,12 @@ def _cables(assignments: pd.DataFrame, material: str, size: float, max_vd: float
                      "size_mm2":size,
                      "conductor_resistance_ohm":conductor_resistance,
                      "connector_allowance_ohm":connector_allowance,
-                     "resistance_ohm":resistance,
+                     "resistance_ohm":resistance,"imp_a":r.imp_a,
+                     "string_vmp_v":r.vmp_stc_v,
+                     "voltage_drop_v":voltage_drop_v,
                      "voltage_drop_pct":vd * 100,"power_loss_pct":loss * 100,
+                     "voltage_drop_limit_pct":max_vd * 100,
+                     "voltage_drop_status":voltage_drop_status,
                      "cable_status":status,"comment":comment})
     return pd.DataFrame(rows)
 
