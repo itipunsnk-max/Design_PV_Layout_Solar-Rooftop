@@ -137,6 +137,9 @@ Master Data + Design Basis + Roof Groups
 - `Inverter Set` = ชุด Inverter ที่โปรแกรมจัดให้ เช่น `INV01`, `INV02`
 - `UNASSIGNED` = ยังไม่มี MPPT/Input ที่รองรับ String นั้นได้
 
+ค่า `kWp` ทุกตารางและ Summary แสดงผลด้วยทศนิยม 3 ตำแหน่ง
+โดยไม่มีการปัดค่าที่ใช้ใน Calculation Engine
+
 เหนือ Candidate strings จะแสดง Total modules, Total DC kWp, จำนวน Inverter
 และ Project DC/AC ratio โดยอัตโนมัติ
 

@@ -64,6 +64,15 @@ def display(frame: pd.DataFrame, status_columns: list[str]) -> None:
             display_frame = display_frame.drop(columns=[column])
     display_frame = display_frame.rename(columns={"tilt_deg": "Tilt (deg)", "azimuth_deg": "Azimuth (deg)", "avg_one_way_m": "Average one-way cable (m)", "avg_loop_m": "Average loop cable (m)"})
     styler = display_frame.style
+    kwp_columns = [
+        column for column in display_frame.columns
+        if "kwp" in str(column).lower()
+    ]
+    if kwp_columns:
+        styler = styler.format(
+            {column: "{:,.3f}" for column in kwp_columns},
+            na_rep="-",
+        )
     for col in status_columns:
         if col in display_frame.columns:
             styler = styler.map(status_style, subset=[col])
@@ -83,7 +92,7 @@ def totals_bar(strings: pd.DataFrame, title: str = "สรุปรวม", tota
     c1.metric("Total modules", f"{total_modules:,}")
     c2.metric("Total strings", f"{total_strings:,}")
     c3.metric("Total AC capacity", f"{total_ac_kw * 1000:,.0f} W" if total_ac_kw is not None else "-")
-    c4.metric("Total DC", f"{total_kwp:,.2f} kWp")
+    c4.metric("Total DC", f"{total_kwp:,.3f} kWp")
     c5.metric("Strings PASS", f"{passed:,}/{total_strings:,}")
 
 
@@ -224,7 +233,7 @@ with tab1:
     )
     summary_cols = st.columns(4)
     summary_cols[0].metric("Total modules", f"{total_candidate_modules:,}")
-    summary_cols[1].metric("Total DC", f"{total_candidate_kwp:,.2f} kWp")
+    summary_cols[1].metric("Total DC", f"{total_candidate_kwp:,.3f} kWp")
     summary_cols[2].metric("Inverter sets", f"{inverter_qty_input:,}")
     actual_dcac = candidate_preview_design.get("actual_dcac_ratio")
     summary_cols[3].metric(
@@ -294,7 +303,7 @@ with tab2:
             a1, a2, a3 = st.columns(3)
             a1.metric("Auto-layout total modules", f"{int(auto_groups['modules'].sum()):,}")
             a2.metric("Auto-layout total strings", f"{len(auto_groups):,}")
-            a3.metric("Auto-layout total DC", f"{auto_groups['string_kwp'].sum():,.2f} kWp")
+            a3.metric("Auto-layout total DC", f"{auto_groups['string_kwp'].sum():,.3f} kWp")
         display(auto_groups, [])
         if st.button("ใช้ Auto-layout แทน Candidate strings") and not auto_groups.empty and auto_groups.modules.min() > 0:
             st.session_state.pending_auto_layout = pd.DataFrame([
@@ -312,7 +321,7 @@ with tab2:
         metrics[0].metric("Nmin MPPT", f"{design['limits']['nmin_mppt']} modules")
         metrics[1].metric("Nmax design", f"{design['limits']['nmax_design']} modules")
         metrics[2].metric("Nmax absolute", f"{design['limits']['nmax_absolute']} modules")
-        metrics[3].metric("Total DC", f"{design['strings']['string_kwp'].sum():,.2f} kWp")
+        metrics[3].metric("Total DC", f"{design['strings']['string_kwp'].sum():,.3f} kWp")
         totals_bar(design["strings"], "ยอดรวม Candidate Strings", design.get("total_ac_kw"))
         display(design["strings"], ["electrical_status"])
 
@@ -363,7 +372,7 @@ with tab4:
         c1.metric("PVsyst total modules", f"{int(pvsyst['total_modules'].sum()):,}")
         c2.metric("PVsyst sub-arrays", f"{len(pvsyst):,}")
         c3.metric("PVsyst AC capacity", f"{design.get('total_ac_kw', 0) * 1000:,.0f} W")
-        c4.metric("PVsyst installed DC", f"{pvsyst['installed_dc_kwp'].sum():,.2f} kWp")
+        c4.metric("PVsyst installed DC", f"{pvsyst['installed_dc_kwp'].sum():,.3f} kWp")
     display(pvsyst, ["electrical_status", "data_status"])
     st.download_button("ดาวน์โหลด PVsyst preparation CSV", csv_bytes(pvsyst), "pvsyst_preparation.csv", "text/csv")
     package = {"project": project_name, "customer": customer, "module": module, "inverter": inverter,
