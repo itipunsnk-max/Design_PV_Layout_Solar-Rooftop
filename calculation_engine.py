@@ -138,11 +138,24 @@ def _assign_mppt(strings: pd.DataFrame, inverter: dict[str, Any], inverter_qty: 
     ordered_strings = strings.sort_values(order_columns).reset_index(drop=True)
     total_strings = len(ordered_strings)
     for position, (_, string) in enumerate(ordered_strings.iterrows()):
-        preferred_inv_no = min(
-            inverter_qty,
-            math.floor(position * inverter_qty / total_strings) + 1,
+        raw_override = string.get("inverter_override", "AUTO")
+        inverter_override = (
+            "AUTO"
+            if pd.isna(raw_override) or not str(raw_override).strip()
+            else str(raw_override).strip().upper()
         )
-        preferred_inverter_id = f"INV{preferred_inv_no:02d}"
+        valid_inverter_ids = {
+            f"INV{number:02d}" for number in range(1, inverter_qty + 1)
+        }
+        manual_assignment = inverter_override != "AUTO"
+        if manual_assignment:
+            preferred_inverter_id = inverter_override
+        else:
+            preferred_inv_no = min(
+                inverter_qty,
+                math.floor(position * inverter_qty / total_strings) + 1,
+            )
+            preferred_inverter_id = f"INV{preferred_inv_no:02d}"
         valid = []
         for slot in slots:
             items = slot["items"]
@@ -153,7 +166,16 @@ def _assign_mppt(strings: pd.DataFrame, inverter: dict[str, Any], inverter_qty: 
             slot for slot in valid
             if slot["inverter_id"] == preferred_inverter_id
         ]
-        candidate_slots = preferred_slots or valid
+        if manual_assignment:
+            # A manual choice is a hard constraint: never silently move the
+            # string to another physical inverter.
+            candidate_slots = (
+                preferred_slots
+                if preferred_inverter_id in valid_inverter_ids
+                else []
+            )
+        else:
+            candidate_slots = preferred_slots or valid
         slot = min(
             candidate_slots,
             key=lambda x: (
@@ -163,10 +185,23 @@ def _assign_mppt(strings: pd.DataFrame, inverter: dict[str, Any], inverter_qty: 
             ),
         ) if candidate_slots else None
         if slot is None:
-            rows.append({**string.to_dict(),"inverter_id":"UNASSIGNED","mppt_no":None,"input_no":None,"assignment_status":"FAIL","comment":"ไม่มี MPPT ที่เข้ากัน: เพิ่ม inverter/MPPT หรืออย่าขนาน string ต่างจำนวน/ทิศ/เงา"})
+            if manual_assignment and preferred_inverter_id not in valid_inverter_ids:
+                comment = f"เลือก {preferred_inverter_id} แต่ไม่มี Inverter ชุดนี้ในโครงการ"
+            elif manual_assignment:
+                comment = f"{preferred_inverter_id} ไม่มี MPPT/Input ที่เข้ากันหรือช่องเต็ม"
+            else:
+                comment = "ไม่มี MPPT ที่เข้ากัน: เพิ่ม inverter/MPPT หรืออย่าขนาน string ต่างจำนวน/ทิศ/เงา"
+            rows.append({**string.to_dict(),"inverter_id":"UNASSIGNED",
+                         "assignment_mode":"MANUAL" if manual_assignment else "AUTO",
+                         "mppt_no":None,"input_no":None,
+                         "assignment_status":"FAIL","comment":comment})
         else:
             slot["items"].append(string)
-            rows.append({**string.to_dict(),"inverter_id":slot["inverter_id"],"mppt_no":slot["mppt_no"],"input_no":len(slot["items"]),"assignment_status":"PASS","comment":"จัดบน MPPT ที่มีจำนวนแผง/ทิศ/เงาเดียวกัน"})
+            rows.append({**string.to_dict(),"inverter_id":slot["inverter_id"],
+                         "assignment_mode":"MANUAL" if manual_assignment else "AUTO",
+                         "mppt_no":slot["mppt_no"],"input_no":len(slot["items"]),
+                         "assignment_status":"PASS",
+                         "comment":"เลือก Inverter โดยผู้ใช้และจัด MPPT สำเร็จ" if manual_assignment else "จัดบน MPPT ที่มีจำนวนแผง/ทิศ/เงาเดียวกัน"})
     return pd.DataFrame(rows)
 
 

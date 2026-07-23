@@ -140,6 +140,18 @@ Master Data + Design Basis + Roof Groups
 ค่า `kWp` ทุกตารางและ Summary แสดงผลด้วยทศนิยม 3 ตำแหน่ง
 โดยไม่มีการปัดค่าที่ใช้ใน Calculation Engine
 
+คอลัมน์ `Inverter Set` ใช้สีแยกตามชุด เช่น INV01 สีฟ้า, INV02 สีเขียว,
+INV03 สีเหลือง และใช้สีเดียวกับการ์ดสรุปเหนือ Candidate strings
+การ์ดแต่ละใบแสดงจำนวน Strings, จำนวนแผง และ DC kWp ของ Inverter ชุดนั้น
+
+คอลัมน์ `เลือก Inverter` รองรับ:
+
+- `AUTO` ให้โปรแกรมแบ่ง String เป็นกลุ่มต่อเนื่องตามจำนวน Inverter
+- `INV01`, `INV02`, ... บังคับ String แถวนั้นไปยังเครื่องที่เลือก
+- `Assigned Inverter` แสดงเครื่องที่จัดได้จริง
+- การเลือกด้วยผู้ใช้เป็น hard constraint; หาก MPPT/Input ของเครื่องนั้นเต็มหรือ
+  ไม่เข้ากัน ระบบแสดง `UNASSIGNED/FAIL` และจะไม่ย้ายไปเครื่องอื่นอัตโนมัติ
+
 เหนือ Candidate strings จะแสดง Total modules, Total DC kWp, จำนวน Inverter
 และ Project DC/AC ratio โดยอัตโนมัติ
 

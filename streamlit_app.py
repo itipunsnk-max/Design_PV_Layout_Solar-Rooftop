@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pandas as pd
 import streamlit as st
@@ -18,20 +19,49 @@ div[data-testid="stMetric"] {background:#f1f7f5;border:1px solid #c8ded6;padding
 </style>""", unsafe_allow_html=True)
 
 ROOF_COLUMNS = [
-    "roof_id", "zone", "group_id", "modules", "orientation",
+    "roof_id", "zone", "group_id", "modules", "inverter_override", "orientation",
     "tilt_deg", "azimuth_deg", "shading", "one_way_m",
 ]
+INVERTER_COLORS = [
+    ("#dbeafe", "#1e3a8a"),  # blue
+    ("#dcfce7", "#14532d"),  # green
+    ("#fef3c7", "#78350f"),  # amber
+    ("#fce7f3", "#831843"),  # pink
+    ("#ede9fe", "#4c1d95"),  # violet
+    ("#cffafe", "#164e63"),  # cyan
+    ("#ffedd5", "#7c2d12"),  # orange
+    ("#e2e8f0", "#1e293b"),  # slate
+]
+
+
+def inverter_colors(inverter_id: object) -> tuple[str, str]:
+    """Return stable background/text colors for an INVxx identifier."""
+    value = str(inverter_id)
+    if value == "UNASSIGNED":
+        return "#fee2e2", "#991b1b"
+    match = re.search(r"(\d+)$", value)
+    if not match:
+        return "#f3f4f6", "#374151"
+    return INVERTER_COLORS[(int(match.group(1)) - 1) % len(INVERTER_COLORS)]
+
+
+def inverter_cell_style(value: object) -> str:
+    background, foreground = inverter_colors(value)
+    return (
+        f"background-color:{background};color:{foreground};"
+        "font-weight:700;border-left:4px solid currentColor"
+    )
 
 
 def default_roof_groups() -> pd.DataFrame:
     """Return a new frame so sessions never share or mutate the same object."""
     return pd.DataFrame([
-        ["RF01", "Upper", "G01", 18, "Portrait", 10, 180, "Low", 35],
-        ["RF01", "Upper", "G02", 18, "Portrait", 10, 180, "Low", 40],
-        ["RF01", "Upper", "G03", 18, "Portrait", 10, 180, "Low", 45],
-        ["RF02", "Lower", "G04", 14, "Portrait", 10, 180, "Low", 55],
-        ["RF02", "Lower", "G05", 17, "Portrait", 10, 180, "Low", 60],
-        ["RF02", "Lower", "G06", 17, "Portrait", 10, 180, "Low", 65],
+        ["RF01", "Upper", "G01", 18, "AUTO", "Portrait", 10, 180, "Low", 35],
+        ["RF01", "Upper", "G02", 18, "AUTO", "Portrait", 10, 180, "Low", 40],
+        ["RF01", "Upper", "G03", 18, "AUTO", "Portrait", 10, 180, "Low", 45],
+        ["RF02", "Lower", "G04", 14, "AUTO", "Portrait", 10, 180, "Low", 55],
+        ["RF02", "Lower", "G05", 17, "AUTO", "Portrait", 10, 180, "Low", 60],
+        ["RF02", "Lower", "G06", 17, "AUTO", "Portrait", 10, 180, "Low", 65],
     ], columns=ROOF_COLUMNS)
 
 
@@ -103,6 +133,18 @@ def init_state() -> None:
         st.session_state.inverter_master = DEFAULT_INVERTERS.copy()
     if "roof_groups" not in st.session_state:
         st.session_state.roof_groups = default_roof_groups()
+    else:
+        # Non-destructive migration for sessions created before manual Inverter
+        # selection was added.
+        migrated_roof_groups = (
+            st.session_state.roof_groups.reindex(columns=ROOF_COLUMNS)
+            .copy()
+            .reset_index(drop=True)
+        )
+        migrated_roof_groups["inverter_override"] = (
+            migrated_roof_groups["inverter_override"].fillna("AUTO")
+        )
+        st.session_state.roof_groups = migrated_roof_groups
     if "roof_editor_revision" not in st.session_state:
         st.session_state.roof_editor_revision = 0
 
@@ -175,7 +217,7 @@ with tab1:
         max_dc_loss = st.number_input("DC loss สูงสุด (%)", 0.1, 10.0, 1.5, 0.1) / 100
 
     st.subheader("Roof layout / Candidate strings")
-    st.markdown("<div style='background:#fff2cc;border-left:5px solid #d6b656;padding:10px;border-radius:4px'>🟨 <b>ช่องที่ต้องกรอก:</b> Roof ID, Zone, Group ID, จำนวนแผง, Orientation, Tilt, Azimuth และ Shading. สามารถ copy/paste หลายแถวจาก Excel แล้วกด <b>บันทึกข้อมูลและคำนวณใหม่</b> • One-way cable เว้นว่างเพื่อกรอกภายหลังได้</div>", unsafe_allow_html=True)
+    st.markdown("<div style='background:#fff2cc;border-left:5px solid #d6b656;padding:10px;border-radius:4px'>🟨 <b>ช่องที่ต้องกรอก:</b> Roof ID, Zone, Group ID, จำนวนแผง, Orientation, Tilt, Azimuth และ Shading. คอลัมน์ <b>เลือก Inverter</b> ใช้ AUTO หรือระบุ INVxx ราย String ได้ • หลัง copy/paste จาก Excel ให้กด <b>บันทึกข้อมูลและคำนวณใหม่</b> • One-way cable เว้นว่างเพื่อกรอกภายหลังได้</div>", unsafe_allow_html=True)
     st.caption("กรอกจาก drone, DWG หรือ survey • one-way cable คือระยะจริงขาเดียว • กด Submit ก่อนเปลี่ยนรุ่น/จำนวน Inverter")
     if st.session_state.pop("roof_saved_notice", False):
         st.success("บันทึกข้อมูลตารางแล้ว และคำนวณ kWp / Inverter Set ใหม่เรียบร้อย")
@@ -219,8 +261,20 @@ with tab1:
             .set_index("source_row")["inverter_id"]
             .to_dict()
         )
+    inverter_options = [
+        "AUTO", *[f"INV{number:02d}" for number in range(1, inverter_qty_input + 1)]
+    ]
+    invalid_overrides = ~candidate_editor_frame["inverter_override"].astype(str).isin(
+        inverter_options
+    )
+    if invalid_overrides.any():
+        st.warning(
+            "ค่าเลือก Inverter บางแถวเกินจำนวนเครื่องปัจจุบัน "
+            "จึงแสดงเป็น AUTO กรุณาตรวจและกดบันทึกอีกครั้ง"
+        )
+        candidate_editor_frame.loc[invalid_overrides, "inverter_override"] = "AUTO"
     candidate_editor_frame.insert(
-        candidate_editor_frame.columns.get_loc("string_kwp") + 1,
+        candidate_editor_frame.columns.get_loc("inverter_override") + 1,
         "inverter_id",
         [inverter_by_row.get(row_no, "-") for row_no in candidate_editor_frame.index],
     )
@@ -242,6 +296,28 @@ with tab1:
         "Project DC/AC ratio",
         f"{actual_dcac:.3f}" if actual_dcac is not None else "-",
     )
+    st.markdown("**จำนวน String แยกตาม Inverter**")
+    inverter_cards = []
+    for _, inverter_row in candidate_preview_design["inverter_summary"].iterrows():
+        inverter_id = str(inverter_row["inverter_id"])
+        background, foreground = inverter_colors(inverter_id)
+        inverter_cards.append(
+            "<div style='min-width:170px;flex:1;padding:10px 14px;"
+            f"background:{background};color:{foreground};"
+            "border-radius:8px;border-left:6px solid currentColor'>"
+            f"<div style='font-weight:800;font-size:1.05rem'>{inverter_id}</div>"
+            f"<div style='font-size:1.25rem;font-weight:800'>"
+            f"{int(inverter_row['assigned_strings']):,} Strings</div>"
+            f"<div>{int(inverter_row['assigned_modules']):,} modules · "
+            f"{float(inverter_row['assigned_dc_kwp']):,.3f} kWp</div>"
+            "</div>"
+        )
+    st.markdown(
+        "<div style='display:flex;flex-wrap:wrap;gap:10px;margin:4px 0 14px'>"
+        + "".join(inverter_cards)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
 
     # A design-dependent key forces calculated kWp/INV columns to refresh when
     # the module, inverter model, module power or inverter quantity is changed.
@@ -251,8 +327,12 @@ with tab1:
         f"R{st.session_state.roof_editor_revision}"
     )
     with st.form("roof_candidate_form", clear_on_submit=False):
+        candidate_editor_styler = candidate_editor_frame.style.map(
+            inverter_cell_style,
+            subset=["inverter_id"],
+        )
         edited_candidate_frame = st.data_editor(
-            candidate_editor_frame, num_rows="dynamic", use_container_width=True,
+            candidate_editor_styler, num_rows="dynamic", use_container_width=True,
             key=roof_editor_key, disabled=["string_kwp", "inverter_id"],
             column_config={
                 "roof_id": st.column_config.TextColumn("🟨 Roof ID *", required=True),
@@ -262,8 +342,14 @@ with tab1:
                 "string_kwp": st.column_config.NumberColumn(
                     "กำลัง DC (kWp)", format="%.3f", disabled=True
                 ),
+                "inverter_override": st.column_config.SelectboxColumn(
+                    "เลือก Inverter",
+                    options=inverter_options,
+                    required=True,
+                    help="AUTO = โปรแกรมแบ่งกลุ่มให้ หรือเลือก INVxx เพื่อบังคับ String นี้",
+                ),
                 "inverter_id": st.column_config.TextColumn(
-                    "Inverter Set", disabled=True
+                    "Assigned Inverter", disabled=True
                 ),
                 "orientation": st.column_config.TextColumn("🟨 Orientation *", required=True),
                 "tilt_deg": st.column_config.NumberColumn("🟨 Tilt (deg) *", min_value=0, max_value=90, required=True),
@@ -313,9 +399,10 @@ with tab2:
         display(auto_groups, [])
         if st.button("ใช้ Auto-layout แทน Candidate strings") and not auto_groups.empty and auto_groups.modules.min() > 0:
             st.session_state.pending_auto_layout = pd.DataFrame([
-                ["AUTO", "Auto", f"G{i+1:02d}", int(row.modules), "TBC", 0, 0, "TBC", None]
+                ["AUTO", "Auto", f"G{i+1:02d}", int(row.modules), "AUTO",
+                 "TBC", 0, 0, "TBC", None]
                 for i, row in auto_groups.iterrows()
-            ], columns=st.session_state.roof_groups.columns)
+            ], columns=ROOF_COLUMNS)
             st.rerun()
         total_dc_kwp = total_modules * module_power / 1000
         st.subheader("Inverter quantity & DC/AC optimization")

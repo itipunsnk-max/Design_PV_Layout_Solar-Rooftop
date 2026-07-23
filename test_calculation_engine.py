@@ -98,3 +98,28 @@ def test_design_is_balanced_and_exported_by_inverter_set():
         for sub_array_id, inverter_id
         in zip(export["sub_array_id"], export["inverter_id"])
     )
+
+
+def test_user_can_manually_select_inverter_per_string():
+    module = DEFAULT_MODULES.iloc[0].to_dict()
+    inverter = DEFAULT_INVERTERS.query("inverter_id == 'SG125CX-P2'").iloc[0].to_dict()
+    groups = pd.DataFrame(
+        [
+            ["RF01", "Upper", "G01", 18, "INV02", "Portrait", 10, 180, "Low", 35],
+            ["RF01", "Upper", "G02", 18, "INV01", "Portrait", 10, 180, "Low", 40],
+            ["RF01", "Upper", "G03", 18, "AUTO", "Portrait", 10, 180, "Low", 45],
+        ],
+        columns=["roof_id", "zone", "group_id", "modules", "inverter_override",
+                 "orientation", "tilt_deg", "azimuth_deg", "shading", "one_way_m"],
+    )
+    result = calculate_design(
+        module=module, inverter=inverter, module_power_w=725, tmin_c=10,
+        tcell_max_c=70, safety_factor=0.95, inverter_qty=2, max_dcac=1.4,
+        cable_material="Copper", cable_size_mm2=6, max_voltage_drop=0.015,
+        max_dc_loss=0.015, strings=groups,
+    )
+    assigned = result["assignments"].set_index("group_id")
+    assert assigned.loc["G01", "inverter_id"] == "INV02"
+    assert assigned.loc["G02", "inverter_id"] == "INV01"
+    assert assigned.loc["G01", "assignment_mode"] == "MANUAL"
+    assert assigned.loc["G03", "assignment_mode"] == "AUTO"
