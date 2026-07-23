@@ -72,6 +72,9 @@ def test_design_is_balanced_and_exported_by_inverter_set():
     summary = result["inverter_summary"].set_index("inverter_id")
     assert summary.loc["INV01", "assigned_strings"] == 3
     assert summary.loc["INV02", "assigned_strings"] == 3
+    assert result["assignments"]["inverter_id"].tolist() == (
+        ["INV01"] * 3 + ["INV02"] * 3
+    )
     assert set(result["cables"]["inverter_id"]) == {"INV01", "INV02"}
 
     export = make_pvsyst_export("Test", module, inverter, result)

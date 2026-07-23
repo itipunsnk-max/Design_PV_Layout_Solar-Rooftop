@@ -131,32 +131,37 @@ def _assign_mppt(strings: pd.DataFrame, inverter: dict[str, Any], inverter_qty: 
     for inv in range(1, inverter_qty + 1):
         for mppt in range(1, int(inverter["mppt_qty"]) + 1):
             slots.append({"inverter_id":f"INV{inv:02d}","mppt_no":mppt,"items":[]})
-    for _, string in strings.sort_values(["modules", "orientation", "shading"], ascending=[False, True, True]).iterrows():
+    # Keep Auto-layout/roof input rows contiguous.  For example, 23 strings and
+    # two inverters become G01-G12 on INV01 and G13-G23 on INV02 instead of
+    # alternating INV01/INV02 on every row.
+    order_columns = ["source_row"] if "source_row" in strings.columns else ["string_id"]
+    ordered_strings = strings.sort_values(order_columns).reset_index(drop=True)
+    total_strings = len(ordered_strings)
+    for position, (_, string) in enumerate(ordered_strings.iterrows()):
+        preferred_inv_no = min(
+            inverter_qty,
+            math.floor(position * inverter_qty / total_strings) + 1,
+        )
+        preferred_inverter_id = f"INV{preferred_inv_no:02d}"
         valid = []
         for slot in slots:
             items = slot["items"]
             same = not items or all(x["modules"] == string.modules and x["orientation"] == string.orientation and x["shading"] == string.shading for x in items)
             current_ok = (len(items)+1)*string.imp_a <= inverter["max_i_mppt_a"] and (len(items)+1)*string.isc_a <= inverter["max_isc_mppt_a"]
             if same and len(items) < inverter["inputs_per_mppt"] and current_ok: valid.append(slot)
-        # Balance DC power between inverter units first, then spread strings over
-        # their MPPTs.  This makes each INVxx a distinct, reviewable design set.
-        inverter_load = {
-            f"INV{inv:02d}": sum(
-                float(item["string_kwp"])
-                for candidate in slots if candidate["inverter_id"] == f"INV{inv:02d}"
-                for item in candidate["items"]
-            )
-            for inv in range(1, inverter_qty + 1)
-        }
+        preferred_slots = [
+            slot for slot in valid
+            if slot["inverter_id"] == preferred_inverter_id
+        ]
+        candidate_slots = preferred_slots or valid
         slot = min(
-            valid,
+            candidate_slots,
             key=lambda x: (
-                inverter_load[x["inverter_id"]],
                 len(x["items"]),
-                x["mppt_no"],
                 x["inverter_id"],
+                x["mppt_no"],
             ),
-        ) if valid else None
+        ) if candidate_slots else None
         if slot is None:
             rows.append({**string.to_dict(),"inverter_id":"UNASSIGNED","mppt_no":None,"input_no":None,"assignment_status":"FAIL","comment":"ไม่มี MPPT ที่เข้ากัน: เพิ่ม inverter/MPPT หรืออย่าขนาน string ต่างจำนวน/ทิศ/เงา"})
         else:
