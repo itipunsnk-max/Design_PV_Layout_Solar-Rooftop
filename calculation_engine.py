@@ -88,7 +88,10 @@ def calculate_design(*, module: dict[str, Any], inverter: dict[str, Any], module
               "nmin_mppt": math.ceil(float(inverter["mppt_min_v"]) / vmp_hot)}
     # Streamlit's dynamic editor can keep an incomplete final row.  Ignore it
     # deliberately and report it back to the UI; never coerce missing modules to 0.
-    working = strings.copy()
+    working = strings.copy().reset_index(drop=True)
+    # Keep the editor row number so calculated kWp/Inverter columns can be mapped
+    # back to the exact candidate row, even when an incomplete row is in-between.
+    working.insert(0, "source_row", range(len(working)))
     working["modules"] = pd.to_numeric(working["modules"], errors="coerce")
     invalid_modules = working[working["modules"].isna() | (working["modules"] <= 0)]
     working = working[working["modules"].notna() & (working["modules"] > 0)].copy()

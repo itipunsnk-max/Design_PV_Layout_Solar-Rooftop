@@ -21,6 +21,7 @@ def test_sample_strings_are_calculated_and_assigned():
     assert result["limits"]["nmin_mppt"] > 0
     assert result["strings"].iloc[0]["electrical_status"] == "PASS"
     assert result["assignments"].iloc[0]["assignment_status"] == "PASS"
+    assert result["assignments"].iloc[0]["source_row"] == 0
 
 
 def test_blank_editor_row_is_ignored_without_crashing():

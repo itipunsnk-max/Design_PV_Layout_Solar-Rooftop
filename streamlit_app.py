@@ -172,14 +172,71 @@ with tab1:
     st.subheader("Roof layout / Candidate strings")
     st.markdown("<div style='background:#fff2cc;border-left:5px solid #d6b656;padding:10px;border-radius:4px'>🟨 <b>ช่องที่ต้องกรอก:</b> Roof ID, Zone, Group ID, จำนวนแผง, Orientation, Tilt, Azimuth, Shading และ One-way cable route. สามารถ copy/paste หลายแถวได้ — ข้อมูลจะถูกเก็บไว้เมื่อหน้า rerun.</div>", unsafe_allow_html=True)
     st.caption("กรอกจาก drone, DWG หรือ survey • one-way cable คือระยะจริงขาเดียว")
+
+    # Calculate a live preview from the currently persisted editor rows.  The two
+    # derived columns are shown in the same grid but disabled to prevent manual edits.
+    candidate_preview_design = calculate_design(
+        module=module, inverter=inverter, module_power_w=module_power,
+        tmin_c=tmin, tcell_max_c=tcell_max, safety_factor=safety_factor,
+        inverter_qty=inverter_qty_input, max_dcac=max_dcac,
+        cable_material=cable_material, cable_size_mm2=cable_size,
+        max_voltage_drop=max_voltage_drop, max_dc_loss=max_dc_loss,
+        strings=st.session_state.roof_groups,
+    )
+    candidate_editor_frame = st.session_state.roof_groups.copy().reset_index(drop=True)
+    candidate_editor_frame.insert(
+        candidate_editor_frame.columns.get_loc("modules") + 1,
+        "string_kwp",
+        pd.to_numeric(candidate_editor_frame["modules"], errors="coerce")
+        * module_power / 1000,
+    )
+    inverter_by_row = {}
+    if not candidate_preview_design["assignments"].empty:
+        inverter_by_row = (
+            candidate_preview_design["assignments"]
+            .drop_duplicates("source_row")
+            .set_index("source_row")["inverter_id"]
+            .to_dict()
+        )
+    candidate_editor_frame.insert(
+        candidate_editor_frame.columns.get_loc("string_kwp") + 1,
+        "inverter_id",
+        [inverter_by_row.get(row_no, "-") for row_no in candidate_editor_frame.index],
+    )
+
+    total_candidate_modules = int(
+        pd.to_numeric(candidate_editor_frame["modules"], errors="coerce")
+        .fillna(0).sum()
+    )
+    total_candidate_kwp = float(
+        pd.to_numeric(candidate_editor_frame["string_kwp"], errors="coerce")
+        .fillna(0).sum()
+    )
+    summary_cols = st.columns(4)
+    summary_cols[0].metric("Total modules", f"{total_candidate_modules:,}")
+    summary_cols[1].metric("Total DC", f"{total_candidate_kwp:,.2f} kWp")
+    summary_cols[2].metric("Inverter sets", f"{inverter_qty_input:,}")
+    actual_dcac = candidate_preview_design.get("actual_dcac_ratio")
+    summary_cols[3].metric(
+        "Project DC/AC ratio",
+        f"{actual_dcac:.3f}" if actual_dcac is not None else "-",
+    )
+
     st.data_editor(
-        st.session_state.roof_groups, num_rows="dynamic", use_container_width=True, key="roof_editor_v4",
+        candidate_editor_frame, num_rows="dynamic", use_container_width=True,
+        key="roof_editor_v4", disabled=["string_kwp", "inverter_id"],
         on_change=sync_roof_editor,
         column_config={
             "roof_id": st.column_config.TextColumn("🟨 Roof ID *", required=True),
             "zone": st.column_config.TextColumn("🟨 Zone *", required=True),
             "group_id": st.column_config.TextColumn("🟨 Group ID *", required=True),
             "modules": st.column_config.NumberColumn("🟨 จำนวนแผง *", min_value=1, step=1, required=True),
+            "string_kwp": st.column_config.NumberColumn(
+                "กำลัง DC (kWp)", format="%.3f", disabled=True
+            ),
+            "inverter_id": st.column_config.TextColumn(
+                "Inverter Set", disabled=True
+            ),
             "orientation": st.column_config.TextColumn("🟨 Orientation *", required=True),
             "tilt_deg": st.column_config.NumberColumn("🟨 Tilt (deg) *", min_value=0, max_value=90, required=True),
             "azimuth_deg": st.column_config.NumberColumn("🟨 Azimuth (deg) *", min_value=-180, max_value=360, required=True),

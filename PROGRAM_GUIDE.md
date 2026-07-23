@@ -131,6 +131,15 @@ Master Data + Design Basis + Roof Groups
 | `shading` | กลุ่มสภาพเงา |
 | `one_way_m` | ระยะสายจริงขาเดียวจาก String ถึงจุดเชื่อมต่อ |
 
+ตารางจะแสดงคอลัมน์คำนวณอัตโนมัติถัดจากจำนวนแผง:
+
+- `กำลัง DC (kWp)` = จำนวนแผง × กำลังแผง ÷ 1,000
+- `Inverter Set` = ชุด Inverter ที่โปรแกรมจัดให้ เช่น `INV01`, `INV02`
+- `UNASSIGNED` = ยังไม่มี MPPT/Input ที่รองรับ String นั้นได้
+
+เหนือ Candidate strings จะแสดง Total modules, Total DC kWp, จำนวน Inverter
+และ Project DC/AC ratio โดยอัตโนมัติ
+
 String ที่ต่อขนานบน MPPT เดียวกันต้องมีจำนวนแผง, orientation และ shading เหมือนกัน
 
 ## 5. การแบ่ง Design เป็นราย Inverter
@@ -277,4 +286,3 @@ python -m pytest -q
 4. Ampacity, derating, installation method และ protection ของสาย
 5. AC system, protection, grounding และข้อกำหนดการไฟฟ้า
 6. String map และ cable route จากแบบ/หน้างานจริง
-
