@@ -142,6 +142,16 @@ Master Data + Design Basis + Roof Groups
 
 String ที่ต่อขนานบน MPPT เดียวกันต้องมีจำนวนแผง, orientation และ shading เหมือนกัน
 
+### 4.4 การแก้ค่าบนตารางหลังเปลี่ยน Inverter
+
+- เมื่อเปลี่ยนรุ่น, กำลังแผง หรือจำนวน Inverter ตารางจะสร้าง design state ใหม่
+  และคำนวณ `กำลัง DC (kWp)`/`Inverter Set` ใหม่อัตโนมัติ
+- คอลัมน์ข้อมูลหน้างาน เช่น จำนวนแผง, Orientation และ One-way cable
+  ยังคงแก้ไขได้ตามปกติ
+- `กำลัง DC (kWp)` และ `Inverter Set` เป็นผลคำนวณจึงตั้งใจให้เป็น read-only
+- หาก Streamlit Cloud เพิ่ง deploy source code รุ่นใหม่ ให้ Reload หน้าเพื่อล้าง widget
+  state จาก source code รุ่นก่อนหนึ่งครั้ง
+
 ## 5. การแบ่ง Design เป็นราย Inverter
 
 Calculation Engine สร้างรหัสเครื่องเป็น `INV01`, `INV02`, ... ตามจำนวน Inverter ที่เลือก

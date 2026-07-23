@@ -17,6 +17,23 @@ st.markdown("""<style>
 div[data-testid="stMetric"] {background:#f1f7f5;border:1px solid #c8ded6;padding:.55rem;border-radius:.5rem;}
 </style>""", unsafe_allow_html=True)
 
+ROOF_COLUMNS = [
+    "roof_id", "zone", "group_id", "modules", "orientation",
+    "tilt_deg", "azimuth_deg", "shading", "one_way_m",
+]
+
+
+def default_roof_groups() -> pd.DataFrame:
+    """Return a new frame so sessions never share or mutate the same object."""
+    return pd.DataFrame([
+        ["RF01", "Upper", "G01", 18, "Portrait", 10, 180, "Low", 35],
+        ["RF01", "Upper", "G02", 18, "Portrait", 10, 180, "Low", 40],
+        ["RF01", "Upper", "G03", 18, "Portrait", 10, 180, "Low", 45],
+        ["RF02", "Lower", "G04", 14, "Portrait", 10, 180, "Low", 55],
+        ["RF02", "Lower", "G05", 17, "Portrait", 10, 180, "Low", 60],
+        ["RF02", "Lower", "G06", 17, "Portrait", 10, 180, "Low", 65],
+    ], columns=ROOF_COLUMNS)
+
 
 def status_style(value: object) -> str:
     value = str(value)
@@ -76,39 +93,57 @@ def init_state() -> None:
     if "inverter_master" not in st.session_state:
         st.session_state.inverter_master = DEFAULT_INVERTERS.copy()
     if "roof_groups" not in st.session_state:
-        st.session_state.roof_groups = pd.DataFrame([
-            ["RF01", "Upper", "G01", 18, "Portrait", 10, 180, "Low", 35],
-            ["RF01", "Upper", "G02", 18, "Portrait", 10, 180, "Low", 40],
-            ["RF01", "Upper", "G03", 18, "Portrait", 10, 180, "Low", 45],
-            ["RF02", "Lower", "G04", 14, "Portrait", 10, 180, "Low", 55],
-            ["RF02", "Lower", "G05", 17, "Portrait", 10, 180, "Low", 60],
-            ["RF02", "Lower", "G06", 17, "Portrait", 10, 180, "Low", 65],
-        ], columns=["roof_id", "zone", "group_id", "modules", "orientation", "tilt_deg", "azimuth_deg", "shading", "one_way_m"])
-def sync_roof_editor() -> None:
-    """Merge DataEditor deltas into an independent persisted dataframe."""
-    changes = st.session_state.get("roof_editor_v4", {})
+        st.session_state.roof_groups = default_roof_groups()
+    if "roof_editor_revision" not in st.session_state:
+        st.session_state.roof_editor_revision = 0
+
+
+def merge_roof_editor_changes(base: pd.DataFrame, changes: object) -> pd.DataFrame:
+    """Apply Streamlit Data Editor deltas to the persisted input-only frame."""
+    updated = base.reindex(columns=ROOF_COLUMNS).copy().reset_index(drop=True)
     if not isinstance(changes, dict):
-        return
-    updated = st.session_state.roof_groups.copy().reset_index(drop=True)
+        return updated
     for row_number, values in changes.get("edited_rows", {}).items():
         row_number = int(row_number)
         if row_number < len(updated):
             for column, value in values.items():
-                if column in updated.columns:
+                if column in ROOF_COLUMNS:
                     updated.at[row_number, column] = value
     for values in changes.get("added_rows", []):
-        updated = pd.concat([updated, pd.DataFrame([{column: values.get(column) for column in updated.columns}])], ignore_index=True)
-    deleted_rows = sorted((int(row) for row in changes.get("deleted_rows", [])), reverse=True)
+        new_row = {column: values.get(column) for column in ROOF_COLUMNS}
+        updated = pd.concat([updated, pd.DataFrame([new_row])], ignore_index=True)
+    deleted_rows = sorted(
+        (int(row) for row in changes.get("deleted_rows", [])), reverse=True
+    )
     for row_number in deleted_rows:
         if row_number < len(updated):
             updated = updated.drop(index=row_number)
-    st.session_state.roof_groups = updated.reset_index(drop=True)
+    return updated.reset_index(drop=True)
+
+
+def sync_roof_editor(editor_key: str) -> None:
+    """Merge DataEditor deltas into an independent persisted dataframe."""
+    changes = st.session_state.get(editor_key, {})
+    # Data Editor deltas are relative to the frame first rendered for this key.
+    # Reapplying them to an already-edited frame can duplicate added rows.
+    current = st.session_state.get(f"{editor_key}__base")
+    if not isinstance(current, pd.DataFrame):
+        current = st.session_state.get("roof_groups")
+    if not isinstance(current, pd.DataFrame):
+        # Callbacks run before the main script body.  A new/deployed session can
+        # therefore reach this function before init_state() has executed.
+        pending = st.session_state.get("pending_auto_layout")
+        current = pending if isinstance(pending, pd.DataFrame) else default_roof_groups()
+    st.session_state["roof_groups"] = merge_roof_editor_changes(current, changes)
 
 
 def apply_pending_auto_layout() -> None:
     pending = st.session_state.pop("pending_auto_layout", None)
     if pending is not None:
         st.session_state.roof_groups = pending.copy()
+        st.session_state.roof_editor_revision = (
+            int(st.session_state.get("roof_editor_revision", 0)) + 1
+        )
 
 
 init_state()
@@ -222,10 +257,22 @@ with tab1:
         f"{actual_dcac:.3f}" if actual_dcac is not None else "-",
     )
 
+    # A design-dependent key forces calculated kWp/INV columns to refresh when
+    # the module, inverter model, module power or inverter quantity is changed.
+    roof_editor_key = (
+        f"roof_editor_v5_{selected_module}_{selected_inv}_"
+        f"{module_power:g}W_{inverter_qty_input}INV_"
+        f"R{st.session_state.roof_editor_revision}"
+    )
+    editor_base_key = f"{roof_editor_key}__base"
+    if editor_base_key not in st.session_state:
+        st.session_state[editor_base_key] = (
+            st.session_state.roof_groups.copy().reset_index(drop=True)
+        )
     st.data_editor(
         candidate_editor_frame, num_rows="dynamic", use_container_width=True,
-        key="roof_editor_v4", disabled=["string_kwp", "inverter_id"],
-        on_change=sync_roof_editor,
+        key=roof_editor_key, disabled=["string_kwp", "inverter_id"],
+        on_change=sync_roof_editor, args=(roof_editor_key,),
         column_config={
             "roof_id": st.column_config.TextColumn("🟨 Roof ID *", required=True),
             "zone": st.column_config.TextColumn("🟨 Zone *", required=True),
