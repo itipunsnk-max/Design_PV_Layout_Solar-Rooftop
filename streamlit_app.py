@@ -107,20 +107,6 @@ def init_state() -> None:
         st.session_state.roof_editor_revision = 0
 
 
-def roof_inputs_equal(left: pd.DataFrame, right: pd.DataFrame) -> bool:
-    """Compare editor inputs while allowing harmless dtype changes from Streamlit."""
-    try:
-        pd.testing.assert_frame_equal(
-            left.reset_index(drop=True),
-            right.reset_index(drop=True),
-            check_dtype=False,
-            check_like=False,
-        )
-        return True
-    except AssertionError:
-        return False
-
-
 def apply_pending_auto_layout() -> None:
     pending = st.session_state.pop("pending_auto_layout", None)
     if pending is not None:
@@ -189,8 +175,24 @@ with tab1:
         max_dc_loss = st.number_input("DC loss สูงสุด (%)", 0.1, 10.0, 1.5, 0.1) / 100
 
     st.subheader("Roof layout / Candidate strings")
-    st.markdown("<div style='background:#fff2cc;border-left:5px solid #d6b656;padding:10px;border-radius:4px'>🟨 <b>ช่องที่ต้องกรอก:</b> Roof ID, Zone, Group ID, จำนวนแผง, Orientation, Tilt, Azimuth, Shading และ One-way cable route. สามารถ copy/paste หลายแถวได้ — ข้อมูลจะถูกเก็บไว้เมื่อหน้า rerun.</div>", unsafe_allow_html=True)
-    st.caption("กรอกจาก drone, DWG หรือ survey • one-way cable คือระยะจริงขาเดียว")
+    st.markdown("<div style='background:#fff2cc;border-left:5px solid #d6b656;padding:10px;border-radius:4px'>🟨 <b>ช่องที่ต้องกรอก:</b> Roof ID, Zone, Group ID, จำนวนแผง, Orientation, Tilt, Azimuth และ Shading. สามารถ copy/paste หลายแถวจาก Excel แล้วกด <b>บันทึกข้อมูลและคำนวณใหม่</b> • One-way cable เว้นว่างเพื่อกรอกภายหลังได้</div>", unsafe_allow_html=True)
+    st.caption("กรอกจาก drone, DWG หรือ survey • one-way cable คือระยะจริงขาเดียว • กด Submit ก่อนเปลี่ยนรุ่น/จำนวน Inverter")
+    if st.session_state.pop("roof_saved_notice", False):
+        st.success("บันทึกข้อมูลตารางแล้ว และคำนวณ kWp / Inverter Set ใหม่เรียบร้อย")
+    duplicate_groups = st.session_state.roof_groups.duplicated(
+        subset=["roof_id", "zone", "group_id"], keep=False
+    )
+    if duplicate_groups.any():
+        duplicate_names = (
+            st.session_state.roof_groups.loc[duplicate_groups, "group_id"]
+            .dropna().astype(str).unique().tolist()
+        )
+        st.warning(
+            "พบ Group ID ซ้ำใน Roof/Zone เดียวกัน: "
+            + ", ".join(duplicate_names[:10])
+            + (" ..." if len(duplicate_names) > 10 else "")
+            + " — ควรแก้ให้ไม่ซ้ำเพื่อให้ติดตาม String ได้ถูกต้อง"
+        )
 
     # Calculate a live preview from the currently persisted editor rows.  The two
     # derived columns are shown in the same grid but disabled to prevent manual edits.
@@ -248,40 +250,44 @@ with tab1:
         f"{module_power:g}W_{inverter_qty_input}INV_"
         f"R{st.session_state.roof_editor_revision}"
     )
-    edited_candidate_frame = st.data_editor(
-        candidate_editor_frame, num_rows="dynamic", use_container_width=True,
-        key=roof_editor_key, disabled=["string_kwp", "inverter_id"],
-        column_config={
-            "roof_id": st.column_config.TextColumn("🟨 Roof ID *", required=True),
-            "zone": st.column_config.TextColumn("🟨 Zone *", required=True),
-            "group_id": st.column_config.TextColumn("🟨 Group ID *", required=True),
-            "modules": st.column_config.NumberColumn("🟨 จำนวนแผง *", min_value=1, step=1, required=True),
-            "string_kwp": st.column_config.NumberColumn(
-                "กำลัง DC (kWp)", format="%.3f", disabled=True
-            ),
-            "inverter_id": st.column_config.TextColumn(
-                "Inverter Set", disabled=True
-            ),
-            "orientation": st.column_config.TextColumn("🟨 Orientation *", required=True),
-            "tilt_deg": st.column_config.NumberColumn("🟨 Tilt (deg) *", min_value=0, max_value=90, required=True),
-            "azimuth_deg": st.column_config.NumberColumn("🟨 Azimuth (deg) *", min_value=-180, max_value=360, required=True),
-            "shading": st.column_config.TextColumn("🟨 Shading *", required=True),
-            "one_way_m": st.column_config.NumberColumn("🟨 One-way cable (m) *", min_value=0.0, required=True),
-        })
-    # Persist the complete returned table, not Data Editor deltas.  This keeps
-    # earlier cell edits, multi-cell paste, added rows and cable values intact.
-    edited_roof_groups = (
-        edited_candidate_frame.reindex(columns=ROOF_COLUMNS)
-        .copy()
-        .reset_index(drop=True)
-    )
-    current_roof_groups = (
-        st.session_state.roof_groups.reindex(columns=ROOF_COLUMNS)
-        .copy()
-        .reset_index(drop=True)
-    )
-    if not roof_inputs_equal(edited_roof_groups, current_roof_groups):
+    with st.form("roof_candidate_form", clear_on_submit=False):
+        edited_candidate_frame = st.data_editor(
+            candidate_editor_frame, num_rows="dynamic", use_container_width=True,
+            key=roof_editor_key, disabled=["string_kwp", "inverter_id"],
+            column_config={
+                "roof_id": st.column_config.TextColumn("🟨 Roof ID *", required=True),
+                "zone": st.column_config.TextColumn("🟨 Zone *", required=True),
+                "group_id": st.column_config.TextColumn("🟨 Group ID *", required=True),
+                "modules": st.column_config.NumberColumn("🟨 จำนวนแผง *", min_value=1, step=1, required=True),
+                "string_kwp": st.column_config.NumberColumn(
+                    "กำลัง DC (kWp)", format="%.3f", disabled=True
+                ),
+                "inverter_id": st.column_config.TextColumn(
+                    "Inverter Set", disabled=True
+                ),
+                "orientation": st.column_config.TextColumn("🟨 Orientation *", required=True),
+                "tilt_deg": st.column_config.NumberColumn("🟨 Tilt (deg) *", min_value=0, max_value=90, required=True),
+                "azimuth_deg": st.column_config.NumberColumn("🟨 Azimuth (deg) *", min_value=-180, max_value=360, required=True),
+                "shading": st.column_config.TextColumn("🟨 Shading *", required=True),
+                "one_way_m": st.column_config.NumberColumn(
+                    "One-way cable (m) — optional", min_value=0.0,
+                    help="เว้นว่างได้ โปรแกรมจะคำนวณ String ก่อนและแจ้งเตือนส่วนสาย DC",
+                ),
+            })
+        roof_submitted = st.form_submit_button(
+            "✅ บันทึกข้อมูลและคำนวณใหม่",
+            type="primary",
+            use_container_width=True,
+        )
+    if roof_submitted:
+        edited_roof_groups = (
+            edited_candidate_frame.reindex(columns=ROOF_COLUMNS)
+            .copy()
+            .reset_index(drop=True)
+        )
         st.session_state.roof_groups = edited_roof_groups
+        st.session_state.roof_editor_revision += 1
+        st.session_state.roof_saved_notice = True
         st.rerun()
 
 design = calculate_design(module=module, inverter=inverter, module_power_w=module_power, tmin_c=tmin,
