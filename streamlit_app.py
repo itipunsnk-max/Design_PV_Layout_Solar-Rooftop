@@ -98,43 +98,18 @@ def init_state() -> None:
         st.session_state.roof_editor_revision = 0
 
 
-def merge_roof_editor_changes(base: pd.DataFrame, changes: object) -> pd.DataFrame:
-    """Apply Streamlit Data Editor deltas to the persisted input-only frame."""
-    updated = base.reindex(columns=ROOF_COLUMNS).copy().reset_index(drop=True)
-    if not isinstance(changes, dict):
-        return updated
-    for row_number, values in changes.get("edited_rows", {}).items():
-        row_number = int(row_number)
-        if row_number < len(updated):
-            for column, value in values.items():
-                if column in ROOF_COLUMNS:
-                    updated.at[row_number, column] = value
-    for values in changes.get("added_rows", []):
-        new_row = {column: values.get(column) for column in ROOF_COLUMNS}
-        updated = pd.concat([updated, pd.DataFrame([new_row])], ignore_index=True)
-    deleted_rows = sorted(
-        (int(row) for row in changes.get("deleted_rows", [])), reverse=True
-    )
-    for row_number in deleted_rows:
-        if row_number < len(updated):
-            updated = updated.drop(index=row_number)
-    return updated.reset_index(drop=True)
-
-
-def sync_roof_editor(editor_key: str) -> None:
-    """Merge DataEditor deltas into an independent persisted dataframe."""
-    changes = st.session_state.get(editor_key, {})
-    # Data Editor deltas are relative to the frame first rendered for this key.
-    # Reapplying them to an already-edited frame can duplicate added rows.
-    current = st.session_state.get(f"{editor_key}__base")
-    if not isinstance(current, pd.DataFrame):
-        current = st.session_state.get("roof_groups")
-    if not isinstance(current, pd.DataFrame):
-        # Callbacks run before the main script body.  A new/deployed session can
-        # therefore reach this function before init_state() has executed.
-        pending = st.session_state.get("pending_auto_layout")
-        current = pending if isinstance(pending, pd.DataFrame) else default_roof_groups()
-    st.session_state["roof_groups"] = merge_roof_editor_changes(current, changes)
+def roof_inputs_equal(left: pd.DataFrame, right: pd.DataFrame) -> bool:
+    """Compare editor inputs while allowing harmless dtype changes from Streamlit."""
+    try:
+        pd.testing.assert_frame_equal(
+            left.reset_index(drop=True),
+            right.reset_index(drop=True),
+            check_dtype=False,
+            check_like=False,
+        )
+        return True
+    except AssertionError:
+        return False
 
 
 def apply_pending_auto_layout() -> None:
@@ -264,15 +239,9 @@ with tab1:
         f"{module_power:g}W_{inverter_qty_input}INV_"
         f"R{st.session_state.roof_editor_revision}"
     )
-    editor_base_key = f"{roof_editor_key}__base"
-    if editor_base_key not in st.session_state:
-        st.session_state[editor_base_key] = (
-            st.session_state.roof_groups.copy().reset_index(drop=True)
-        )
-    st.data_editor(
+    edited_candidate_frame = st.data_editor(
         candidate_editor_frame, num_rows="dynamic", use_container_width=True,
         key=roof_editor_key, disabled=["string_kwp", "inverter_id"],
-        on_change=sync_roof_editor, args=(roof_editor_key,),
         column_config={
             "roof_id": st.column_config.TextColumn("🟨 Roof ID *", required=True),
             "zone": st.column_config.TextColumn("🟨 Zone *", required=True),
@@ -290,6 +259,21 @@ with tab1:
             "shading": st.column_config.TextColumn("🟨 Shading *", required=True),
             "one_way_m": st.column_config.NumberColumn("🟨 One-way cable (m) *", min_value=0.0, required=True),
         })
+    # Persist the complete returned table, not Data Editor deltas.  This keeps
+    # earlier cell edits, multi-cell paste, added rows and cable values intact.
+    edited_roof_groups = (
+        edited_candidate_frame.reindex(columns=ROOF_COLUMNS)
+        .copy()
+        .reset_index(drop=True)
+    )
+    current_roof_groups = (
+        st.session_state.roof_groups.reindex(columns=ROOF_COLUMNS)
+        .copy()
+        .reset_index(drop=True)
+    )
+    if not roof_inputs_equal(edited_roof_groups, current_roof_groups):
+        st.session_state.roof_groups = edited_roof_groups
+        st.rerun()
 
 design = calculate_design(module=module, inverter=inverter, module_power_w=module_power, tmin_c=tmin,
                           tcell_max_c=tcell_max, safety_factor=safety_factor, inverter_qty=inverter_qty_input,
