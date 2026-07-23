@@ -433,16 +433,22 @@ with tab1:
             use_container_width=True,
         )
         st.caption(
-            "แก้ไขทีละช่องในตารางได้ตามปกติ • หาก Paste หลายแถวจาก Excel "
-            "แนะนำให้ใช้ช่อง Paste ด้านบนเพื่อจัดตำแหน่งคอลัมน์อัตโนมัติ"
+            "ตารางกรอกข้อมูลมี 11 คอลัมน์ตรงกับ Excel เดิม สามารถ Paste ตรงได้ "
+            "• หากรูปแบบคอลัมน์ต่างออกไป ให้ใช้ช่อง Paste ด้านบน"
         )
-        candidate_editor_styler = candidate_editor_frame.style.map(
+        # Keep the editable grid at the exact 11-column legacy Excel order.
+        # Assigned Inverter is rendered in the read-only result table below;
+        # placing it inside this grid would shift pasted Excel cells.
+        candidate_input_frame = candidate_editor_frame.drop(
+            columns=["inverter_id"]
+        )
+        candidate_editor_styler = candidate_input_frame.style.map(
             inverter_cell_style,
-            subset=["inverter_id"],
+            subset=["inverter_override"],
         )
         edited_candidate_frame = st.data_editor(
             candidate_editor_styler, num_rows="dynamic", use_container_width=True,
-            key=roof_editor_key, disabled=["string_kwp", "inverter_id"],
+            key=roof_editor_key, disabled=["string_kwp"],
             column_config={
                 "roof_id": st.column_config.TextColumn(
                     "🟨 Roof ID *", required=True, width="small"
@@ -467,9 +473,6 @@ with tab1:
                     required=True,
                     width="small",
                     help="AUTO = โปรแกรมแบ่งกลุ่มให้ หรือเลือก INVxx เพื่อบังคับ String นี้",
-                ),
-                "inverter_id": st.column_config.TextColumn(
-                    "Assigned\nInverter", disabled=True, width="small"
                 ),
                 "orientation": st.column_config.TextColumn(
                     "🟨 Orientation *", required=True, width="small"
@@ -507,6 +510,37 @@ with tab1:
         st.session_state.roof_editor_revision += 1
         st.session_state.roof_saved_notice = True
         st.rerun()
+
+    st.markdown("**ผลการจัด Inverter ราย String**")
+    assignment_preview = candidate_editor_frame[[
+        "roof_id", "group_id", "modules", "string_kwp",
+        "inverter_override", "inverter_id",
+    ]].rename(columns={
+        "roof_id": "Roof ID",
+        "group_id": "Group ID",
+        "modules": "Modules",
+        "string_kwp": "DC (kWp)",
+        "inverter_override": "เลือก Inverter",
+        "inverter_id": "Assigned Inverter",
+    })
+    assignment_preview_styler = (
+        assignment_preview.style
+        .format({"DC (kWp)": "{:,.3f}"}, na_rep="-")
+        .map(inverter_cell_style, subset=["Assigned Inverter"])
+    )
+    st.dataframe(
+        assignment_preview_styler,
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "Roof ID": st.column_config.TextColumn(width="small"),
+            "Group ID": st.column_config.TextColumn(width="small"),
+            "Modules": st.column_config.NumberColumn(width="small"),
+            "DC (kWp)": st.column_config.NumberColumn(width="small"),
+            "เลือก Inverter": st.column_config.TextColumn(width="small"),
+            "Assigned Inverter": st.column_config.TextColumn(width="small"),
+        },
+    )
 
 design = calculate_design(module=module, inverter=inverter, module_power_w=module_power, tmin_c=tmin,
                           tcell_max_c=tcell_max, safety_factor=safety_factor, inverter_qty=inverter_qty_input,
