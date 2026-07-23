@@ -6,6 +6,7 @@ Thai-first Streamlit app for preliminary Solar Rooftop string, MPPT and DC cable
 
 - `calculation_engine.py` — pure calculation layer: voltage/current validation, MPPT grouping, DC cable calculation, QA/QC and PVsyst-preparation table.
 - `streamlit_app.py` — friendly Thai interface, inputs, visual output and exports.
+- `PROGRAM_GUIDE.md` — คู่มือรายละเอียดองค์ประกอบ จุด Config การแบ่งชุด Inverter และโครงสร้างสูตร
 
 ## Run locally
 

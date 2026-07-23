@@ -8,7 +8,13 @@ from typing import Any
 import pandas as pd
 
 DEFAULT_MODULES = pd.DataFrame([
-    {"module_id":"JINKO-710-BDV","manufacturer":"JinkoSolar","model":"JKM710N-66HL5-BDV-Z2C2-OC","pmax_w":710,"vmp_v":40.65,"imp_a":17.47,"voc_v":48.73,"isc_a":18.53,"beta_voc_pct_c":-0.25,"beta_vmp_pct_c":-0.29,"max_system_v":1500,"fuse_a":35,"pan_file":"REQUIRES VERIFICATION","verification_status":"Verified","source":"Jinko datasheet 2024-07-09"}
+    {"module_id":"JINKO-725-BDV","manufacturer":"JinkoSolar","model":"JKM725N-66HL5-BDV-Z2C2-OC",
+     "pmax_w":725,"vmp_v":41.00,"imp_a":17.69,"voc_v":49.20,"isc_a":18.74,
+     "module_efficiency_pct":23.35,"power_tolerance_pct":"±3%","power_sorting_w":"0 to +3 W",
+     "beta_pmax_pct_c":-0.29,"beta_voc_pct_c":-0.25,"beta_vmp_pct_c":-0.29,
+     "alpha_isc_pct_c":0.045,"max_system_v":1500,"fuse_a":35,
+     "pan_file":"REQUIRES VERIFICATION","verification_status":"Verified",
+     "source":"Jinko JKM700-725N-66HL5-BDV-Z2C2-OC datasheet"}
 ])
 
 DEFAULT_INVERTERS = pd.DataFrame([
@@ -70,7 +76,8 @@ def calculate_design(*, module: dict[str, Any], inverter: dict[str, Any], module
                      max_dc_loss: float, strings: pd.DataFrame) -> dict[str, Any]:
     required = ["dc_max_v","startup_v","mppt_min_v","mppt_max_v","max_i_mppt_a","max_isc_mppt_a","max_i_input_a","mppt_qty","inputs_per_mppt","rated_ac_kw"]
     if any(pd.isna(inverter.get(x)) for x in required):
-        return {"limits": {}, "strings": pd.DataFrame(), "assignments": pd.DataFrame(), "cables": pd.DataFrame(), "critical_missing": True}
+        return {"limits": {}, "strings": pd.DataFrame(), "assignments": pd.DataFrame(),
+                "inverter_summary": pd.DataFrame(), "cables": pd.DataFrame(), "critical_missing": True}
     beta_voc = abs(float(module["beta_voc_pct_c"])) / 100
     beta_vmp = float(module["beta_vmp_pct_c"]) / 100
     voc_cold = float(module["voc_v"]) * (1 + beta_voc * (25 - tmin_c))
@@ -89,7 +96,11 @@ def calculate_design(*, module: dict[str, Any], inverter: dict[str, Any], module
     if not invalid_modules.empty:
         input_warnings.append(f"ข้าม {len(invalid_modules)} แถวที่ไม่มีจำนวนแผงหรือจำนวนแผงไม่ถูกต้อง")
     if working.empty:
-        return {"limits": limits, "strings": pd.DataFrame(), "assignments": pd.DataFrame(), "cables": pd.DataFrame(), "critical_missing": False, "max_dcac": max_dcac, "input_warnings": input_warnings}
+        return {"limits": limits, "strings": pd.DataFrame(), "assignments": pd.DataFrame(),
+                "inverter_summary": _summarize_inverters(
+                    pd.DataFrame(), inverter, inverter_qty, max_dcac
+                ), "cables": pd.DataFrame(), "critical_missing": False,
+                "max_dcac": max_dcac, "input_warnings": input_warnings}
 
     rows = []
     for i, r in working.reset_index(drop=True).iterrows():
@@ -101,10 +112,12 @@ def calculate_design(*, module: dict[str, Any], inverter: dict[str, Any], module
                      "voc_cold_v":v_cold,"vmp_hot_v":v_hot,"vmp_stc_v":v_stc,"imp_a":module["imp_a"],"isc_a":module["isc_a"],"electrical_status":status,"comment":comment})
     out = pd.DataFrame(rows)
     assignments = _assign_mppt(out, inverter, inverter_qty)
+    inverter_summary = _summarize_inverters(assignments, inverter, inverter_qty, max_dcac)
     cables = _cables(assignments, cable_material, cable_size_mm2, max_voltage_drop, max_dc_loss)
     total_dc_kwp = float(out["string_kwp"].sum())
     total_ac_kw = float(inverter["rated_ac_kw"]) * inverter_qty
-    return {"limits": limits, "strings": out, "assignments": assignments, "cables": cables,
+    return {"limits": limits, "strings": out, "assignments": assignments,
+            "inverter_summary": inverter_summary, "cables": cables,
             "critical_missing": False, "max_dcac": max_dcac, "input_warnings": input_warnings,
             "total_dc_kwp": total_dc_kwp, "total_ac_kw": total_ac_kw,
             "actual_dcac_ratio": total_dc_kwp / total_ac_kw if total_ac_kw else None}
@@ -122,12 +135,86 @@ def _assign_mppt(strings: pd.DataFrame, inverter: dict[str, Any], inverter_qty: 
             same = not items or all(x["modules"] == string.modules and x["orientation"] == string.orientation and x["shading"] == string.shading for x in items)
             current_ok = (len(items)+1)*string.imp_a <= inverter["max_i_mppt_a"] and (len(items)+1)*string.isc_a <= inverter["max_isc_mppt_a"]
             if same and len(items) < inverter["inputs_per_mppt"] and current_ok: valid.append(slot)
-        slot = min(valid, key=lambda x: len(x["items"])) if valid else None
+        # Balance DC power between inverter units first, then spread strings over
+        # their MPPTs.  This makes each INVxx a distinct, reviewable design set.
+        inverter_load = {
+            f"INV{inv:02d}": sum(
+                float(item["string_kwp"])
+                for candidate in slots if candidate["inverter_id"] == f"INV{inv:02d}"
+                for item in candidate["items"]
+            )
+            for inv in range(1, inverter_qty + 1)
+        }
+        slot = min(
+            valid,
+            key=lambda x: (
+                inverter_load[x["inverter_id"]],
+                len(x["items"]),
+                x["mppt_no"],
+                x["inverter_id"],
+            ),
+        ) if valid else None
         if slot is None:
             rows.append({**string.to_dict(),"inverter_id":"UNASSIGNED","mppt_no":None,"input_no":None,"assignment_status":"FAIL","comment":"ไม่มี MPPT ที่เข้ากัน: เพิ่ม inverter/MPPT หรืออย่าขนาน string ต่างจำนวน/ทิศ/เงา"})
         else:
             slot["items"].append(string)
             rows.append({**string.to_dict(),"inverter_id":slot["inverter_id"],"mppt_no":slot["mppt_no"],"input_no":len(slot["items"]),"assignment_status":"PASS","comment":"จัดบน MPPT ที่มีจำนวนแผง/ทิศ/เงาเดียวกัน"})
+    return pd.DataFrame(rows)
+
+
+def _summarize_inverters(assignments: pd.DataFrame, inverter: dict[str, Any],
+                         inverter_qty: int, max_dcac: float) -> pd.DataFrame:
+    """One auditable capacity/load row for every physical inverter set."""
+    rows = []
+    rated_ac_kw = float(inverter["rated_ac_kw"])
+    mppt_qty = int(inverter["mppt_qty"])
+    inputs_per_mppt = int(inverter["inputs_per_mppt"])
+    for inv_no in range(1, inverter_qty + 1):
+        inverter_id = f"INV{inv_no:02d}"
+        if assignments.empty:
+            assigned = assignments
+        else:
+            assigned = assignments[
+                (assignments["inverter_id"] == inverter_id)
+                & (assignments["assignment_status"] == "PASS")
+            ]
+        dc_kwp = float(pd.to_numeric(assigned.get("string_kwp"), errors="coerce").fillna(0).sum()) if not assigned.empty else 0.0
+        ratio = dc_kwp / rated_ac_kw if rated_ac_kw else None
+        if not dc_kwp:
+            status, comment = "WARNING", "ยังไม่มี String จัดเข้าชุด Inverter นี้"
+        elif ratio > max_dcac:
+            status, comment = "FAIL", "DC/AC ratio ของชุดสูงกว่าเกณฑ์ที่กำหนด"
+        elif ratio < 0.80:
+            status, comment = "WARNING", "DC/AC ratio ของชุดต่ำกว่า 0.80"
+        else:
+            status, comment = "PASS", "โหลด DC ของชุดอยู่ในเกณฑ์ที่กำหนด"
+        rows.append({
+            "inverter_id": inverter_id,
+            "inverter_model": inverter["model"],
+            "assigned_strings": int(assigned["string_id"].nunique()) if not assigned.empty else 0,
+            "assigned_modules": int(pd.to_numeric(assigned.get("modules"), errors="coerce").fillna(0).sum()) if not assigned.empty else 0,
+            "assigned_dc_kwp": dc_kwp,
+            "rated_ac_kw": rated_ac_kw,
+            "dc_ac_ratio": ratio,
+            "used_mppt": int(assigned["mppt_no"].nunique()) if not assigned.empty else 0,
+            "total_mppt": mppt_qty,
+            "used_inputs": len(assigned),
+            "total_inputs": mppt_qty * inputs_per_mppt,
+            "status": status,
+            "comment": comment,
+        })
+    if not assignments.empty:
+        unassigned = assignments[assignments["inverter_id"] == "UNASSIGNED"]
+        if not unassigned.empty:
+            rows.append({
+                "inverter_id": "UNASSIGNED", "inverter_model": inverter["model"],
+                "assigned_strings": int(unassigned["string_id"].nunique()),
+                "assigned_modules": int(pd.to_numeric(unassigned["modules"], errors="coerce").fillna(0).sum()),
+                "assigned_dc_kwp": float(pd.to_numeric(unassigned["string_kwp"], errors="coerce").fillna(0).sum()),
+                "rated_ac_kw": None, "dc_ac_ratio": None, "used_mppt": 0,
+                "total_mppt": 0, "used_inputs": 0, "total_inputs": 0,
+                "status": "FAIL", "comment": "ไม่มีช่อง MPPT ที่เข้ากันสำหรับ String กลุ่มนี้",
+            })
     return pd.DataFrame(rows)
 
 
@@ -138,7 +225,8 @@ def _cables(assignments: pd.DataFrame, material: str, size: float, max_vd: float
     for _, r in assignments.iterrows():
         one_way_m = pd.to_numeric(r["one_way_m"], errors="coerce")
         if pd.isna(one_way_m) or one_way_m < 0:
-            rows.append({"string_id": r.string_id, "one_way_m": None, "loop_m": None, "material": material,
+            rows.append({"string_id": r.string_id, "inverter_id": r.inverter_id,
+                         "one_way_m": None, "loop_m": None, "material": material,
                          "size_mm2": size, "resistance_ohm": None, "voltage_drop_pct": None,
                          "power_loss_pct": None, "cable_status": "WARNING", "comment": "กรอกระยะ one-way cable route ก่อนตรวจ loss"})
             continue
@@ -148,7 +236,11 @@ def _cables(assignments: pd.DataFrame, material: str, size: float, max_vd: float
         loss = r.imp_a**2 * resistance / (r.string_kwp*1000)
         status = "PASS" if vd <= max_vd and loss <= max_loss else "WARNING"
         comment = "ผ่านเกณฑ์สาย DC" if status == "PASS" else "เพิ่มขนาดสาย / ลดระยะ route / ตรวจ route จริง"
-        rows.append({"string_id":r.string_id,"one_way_m":one_way_m,"loop_m":loop_m,"material":material,"size_mm2":size,"resistance_ohm":resistance,"voltage_drop_pct":vd * 100,"power_loss_pct":loss * 100,"cable_status":status,"comment":comment})
+        rows.append({"string_id":r.string_id,"inverter_id":r.inverter_id,
+                     "one_way_m":one_way_m,"loop_m":loop_m,"material":material,
+                     "size_mm2":size,"resistance_ohm":resistance,
+                     "voltage_drop_pct":vd * 100,"power_loss_pct":loss * 100,
+                     "cable_status":status,"comment":comment})
     return pd.DataFrame(rows)
 
 
@@ -168,18 +260,26 @@ def qa_summary(design: dict[str, Any], module: dict[str, Any], inverter: dict[st
 
 
 def make_pvsyst_export(project: str, module: dict[str, Any], inverter: dict[str, Any], design: dict[str, Any]) -> pd.DataFrame:
-    strings, cables = design["strings"], design["cables"]
+    assignments, cables = design["assignments"], design["cables"]
+    strings = assignments[assignments["assignment_status"] == "PASS"].copy()
     if strings.empty: return pd.DataFrame()
-    merged = strings.merge(cables[["string_id","loop_m","resistance_ohm","power_loss_pct"]], on="string_id", how="left")
+    merged = strings.merge(
+        cables[["string_id","inverter_id","loop_m","resistance_ohm","power_loss_pct"]],
+        on=["string_id","inverter_id"], how="left"
+    )
     groups=[]
     # PVsyst sub-arrays must not mix a distinct electrical length or orientation definition.
-    for (n, orient, tilt, azimuth), g in merged.groupby(["modules", "orientation", "tilt_deg", "azimuth_deg"], dropna=False):
+    for (inverter_id, n, orient, tilt, azimuth), g in merged.groupby(
+        ["inverter_id", "modules", "orientation", "tilt_deg", "azimuth_deg"],
+        dropna=False
+    ):
         valid_r = g.dropna(subset=["resistance_ohm", "imp_a"])
         equivalent_r = ((valid_r.imp_a**2 * valid_r.resistance_ohm).sum() / (valid_r.imp_a**2).sum()) if not valid_r.empty else None
         cable_ready = len(valid_r) == len(g)
         groups.append({
             "project": project,
-            "sub_array_id": f"PV-{n}M-{orient}-{tilt}deg-{azimuth}az",
+            "inverter_id": inverter_id,
+            "sub_array_id": f"{inverter_id}-PV-{n}M-{orient}-{tilt}deg-{azimuth}az",
             "orientation": orient, "tilt_deg": tilt, "azimuth_deg": azimuth,
             "module_manufacturer": module["manufacturer"], "module_model": module["model"],
             "module_w": module["pmax_w"], "pan_file": module["pan_file"], "modules_in_series": n,

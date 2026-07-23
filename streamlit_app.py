@@ -139,6 +139,11 @@ with tab1:
         module["pmax_w"] = module_power
         suffix = st.text_input("Suffix / รุ่นย่อยที่ยืนยันแล้ว", "BDV")
         st.caption(f"{module['manufacturer']} | {module['model']} | {module['verification_status']}")
+        st.caption(
+            f"Vmp {module['vmp_v']:.2f} V | Imp {module['imp_a']:.2f} A | "
+            f"Voc {module['voc_v']:.2f} V | Isc {module['isc_a']:.2f} A | "
+            f"Efficiency {module.get('module_efficiency_pct', 0):.2f}%"
+        )
     with col2:
         st.subheader("Inverter")
         selected_inv = st.selectbox("รุ่น Inverter", master_inverters["inverter_id"].tolist(), index=min(3, len(master_inverters)-1))
@@ -224,10 +229,30 @@ with tab2:
         display(design["strings"], ["electrical_status"])
 
 with tab3:
-    st.subheader("MPPT Assignment ที่เสนอ")
-    st.caption("จัด MPPT ก่อน cable และไม่ parallel string ที่จำนวนแผง, orientation หรือ shading ต่างกัน")
-    totals_bar(design["assignments"], "ยอดรวมรายการที่จัด MPPT", design.get("total_ac_kw"))
-    display(design["assignments"], ["assignment_status", "electrical_status"])
+    st.subheader("Inverter Design Sets")
+    st.caption("กระจายกำลัง DC ให้สมดุลระหว่าง Inverter ก่อน แล้วจึงจัด MPPT ภายในแต่ละชุด")
+    display(design["inverter_summary"], ["status"])
+    if not design["assignments"].empty:
+        inverter_sets = design["inverter_summary"]["inverter_id"].tolist()
+        set_tabs = st.tabs(inverter_sets)
+        for set_tab, inverter_id in zip(set_tabs, inverter_sets):
+            with set_tab:
+                set_assignments = design["assignments"][
+                    design["assignments"]["inverter_id"] == inverter_id
+                ]
+                set_summary = design["inverter_summary"][
+                    design["inverter_summary"]["inverter_id"] == inverter_id
+                ].iloc[0]
+                set_ac_kw = (
+                    float(set_summary["rated_ac_kw"])
+                    if pd.notna(set_summary["rated_ac_kw"]) else None
+                )
+                totals_bar(
+                    set_assignments,
+                    f"สรุปชุด {inverter_id}",
+                    set_ac_kw,
+                )
+                display(set_assignments, ["assignment_status", "electrical_status"])
     st.subheader("DC Cable Calculation")
     st.caption("Voltage drop และ Power loss แสดงเป็น % • เปลี่ยนเบอร์สายในหน้า ข้อมูลตั้งต้น แล้วผลจะคำนวณใหม่")
     totals_bar(design["cables"].merge(design["strings"][["string_id", "modules", "string_kwp", "electrical_status"]], on="string_id", how="left") if not design["cables"].empty else pd.DataFrame(), "ยอดรวม String ที่ตรวจสาย DC", design.get("total_ac_kw"))
@@ -255,6 +280,7 @@ with tab4:
     st.download_button("ดาวน์โหลด PVsyst preparation CSV", csv_bytes(pvsyst), "pvsyst_preparation.csv", "text/csv")
     package = {"project": project_name, "customer": customer, "module": module, "inverter": inverter,
                "limits": design.get("limits", {}), "strings": design["strings"].to_dict("records"),
+               "inverter_sets": design["inverter_summary"].to_dict("records"),
                "assignments": design["assignments"].to_dict("records")}
     st.download_button("ดาวน์โหลด Design Package (JSON)", json.dumps(package, ensure_ascii=False, indent=2, default=str).encode(), "solar_design_package.json", "application/json")
 
