@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from calculation_engine import (
-    DEFAULT_INVERTERS, DEFAULT_MODULES, calculate_design, csv_bytes,
+    DEFAULT_INVERTERS, DEFAULT_MODULES, calculate_design, calculate_string_limits, csv_bytes,
     inverter_optimisation, make_pvsyst_export, qa_summary, recommend_inverter_options,
     recommend_string_groups,
 )
@@ -135,6 +135,50 @@ def status_style(value: object) -> str:
     return ""
 
 
+MPPT_HIGHLIGHT_COLORS = [
+    "#e8f1ff", "#e8f8ef", "#fff5db", "#fbeafa",
+    "#ebefff", "#e3f7f8", "#ffede3", "#f0f2f5",
+    "#f3e8ff", "#ecfccb", "#fee2e2", "#cffafe",
+]
+STRING_HIGHLIGHT_COLORS = [
+    "#2563eb", "#16a34a", "#d97706", "#c026d3",
+    "#4f46e5", "#0891b2", "#ea580c", "#475569",
+    "#9333ea", "#65a30d", "#dc2626", "#0e7490",
+]
+
+
+def _sequence_number(value: object) -> int | None:
+    match = re.search(r"(\d+)", str(value))
+    return int(match.group(1)) if match else None
+
+
+def assignment_row_style(row: pd.Series) -> list[str]:
+    """Highlight MPPT groups and String order without hiding status colors."""
+    mppt_number = _sequence_number(row.get("MPPT"))
+    string_number = _sequence_number(row.get("String ID"))
+    mppt_color = (
+        MPPT_HIGHLIGHT_COLORS[(mppt_number - 1) % len(MPPT_HIGHLIGHT_COLORS)]
+        if mppt_number else "#ffffff"
+    )
+    string_color = (
+        STRING_HIGHLIGHT_COLORS[(string_number - 1) % len(STRING_HIGHLIGHT_COLORS)]
+        if string_number else "#94a3b8"
+    )
+    styles = [f"background-color:{mppt_color};" for _ in row.index]
+    for column in ("String ID", "String"):
+        if column in row.index:
+            styles[row.index.get_loc(column)] = (
+                f"background-color:{mppt_color};color:{string_color};"
+                f"font-weight:700;border-left:5px solid {string_color};"
+            )
+    if "MPPT" in row.index:
+        styles[row.index.get_loc("MPPT")] = (
+            f"background-color:{mppt_color};font-weight:800;"
+            "border:2px solid #64748b;"
+        )
+    return styles
+
+
 def display(frame: pd.DataFrame, status_columns: list[str]) -> None:
     if frame.empty:
         st.info("ยังไม่มีข้อมูลที่แสดงผล")
@@ -149,7 +193,16 @@ def display(frame: pd.DataFrame, status_columns: list[str]) -> None:
         if column in display_frame.columns:
             display_frame[label] = display_frame[column].map(lambda value: "-" if pd.isna(value) else f"{float(value):.2f}%")
             display_frame = display_frame.drop(columns=[column])
-    display_frame = display_frame.rename(columns={"tilt_deg": "Tilt (deg)", "azimuth_deg": "Azimuth (deg)", "avg_one_way_m": "Average one-way cable (m)", "avg_loop_m": "Average loop cable (m)"})
+    display_frame = display_frame.rename(columns={
+        "tilt_deg": "Tilt (deg)",
+        "azimuth_deg": "Azimuth (deg)",
+        "avg_one_way_m": "Average one-way cable (m)",
+        "avg_loop_m": "Average loop cable (m)",
+        "input_no": "String",
+        "mppt_modules_per_string": "Modules/String in MPPT",
+        "mppt_string_count": "Strings/MPPT",
+        "mppt_total_modules": "MPPT total modules",
+    })
     styler = display_frame.style
     kwp_columns = [
         column for column in display_frame.columns
@@ -291,21 +344,21 @@ with tab1:
         if inverter["verification_status"] != "Verified":
             st.error("ห้ามออกแบบ approval: รุ่นนี้ไม่มี datasheet ที่ยืนยันแล้ว")
 
-    st.subheader("Design Basis")
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        tmin = st.number_input("อุณหภูมิต่ำสุด (°C)", -30.0, 40.0, 10.0, 1.0)
-        tcell_max = st.number_input("อุณหภูมิเซลล์สูงสุด (°C)", 25.0, 100.0, 70.0, 1.0)
-    with c2:
-        safety_factor = st.number_input("Voltage safety factor", 0.80, 1.00, 0.95, 0.01)
-        max_dcac = st.number_input("DC/AC ratio สูงสุด", 0.5, 2.0, 1.40, 0.01)
-    with c3:
-        cable_material = st.selectbox("ตัวนำสาย DC", ["Copper", "Aluminium"])
-        cable_option = st.selectbox("เบอร์สาย DC", ["4 mm²", "6 mm²", "10 mm²", "16 mm²", "กำหนดเอง"])
-        cable_size = st.number_input("ขนาดสายที่กำหนดเอง (mm²)", 1.0, 500.0, 6.0, 0.5) if cable_option == "กำหนดเอง" else float(cable_option.split()[0])
-    with c4:
-        max_voltage_drop = st.number_input("Voltage drop สูงสุด (%)", 0.1, 10.0, 1.5, 0.1) / 100
-        max_dc_loss = st.number_input("DC loss สูงสุด (%)", 0.1, 10.0, 1.5, 0.1) / 100
+    with st.expander("Design Basis (คลิกเพื่อขยาย)", expanded=False):
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            tmin = st.number_input("อุณหภูมิต่ำสุด (°C)", -30.0, 40.0, 10.0, 1.0)
+            tcell_max = st.number_input("อุณหภูมิเซลล์สูงสุด (°C)", 25.0, 100.0, 70.0, 1.0)
+        with c2:
+            safety_factor = st.number_input("Voltage safety factor", 0.80, 1.00, 0.95, 0.01)
+            max_dcac = st.number_input("DC/AC ratio สูงสุด", 0.5, 2.0, 1.40, 0.01)
+        with c3:
+            cable_material = st.selectbox("ตัวนำสาย DC", ["Copper", "Aluminium"])
+            cable_option = st.selectbox("เบอร์สาย DC", ["4 mm²", "6 mm²", "10 mm²", "16 mm²", "กำหนดเอง"])
+            cable_size = st.number_input("ขนาดสายที่กำหนดเอง (mm²)", 1.0, 500.0, 6.0, 0.5) if cable_option == "กำหนดเอง" else float(cable_option.split()[0])
+        with c4:
+            max_voltage_drop = st.number_input("Voltage drop สูงสุด (%)", 0.1, 10.0, 1.5, 0.1) / 100
+            max_dc_loss = st.number_input("DC loss สูงสุด (%)", 0.1, 10.0, 1.5, 0.1) / 100
 
     auto_inverter_options = pd.DataFrame()
     if selected_inv_choice == "AUTO" or inverter_qty_choice == "AUTO":
@@ -365,6 +418,11 @@ with tab1:
             display(auto_inverter_options, ["status"])
 
     st.subheader("Roof layout / Candidate strings")
+    if selected_inv_choice == "AUTO":
+        st.info(
+            f"Inverter ที่ AUTO เลือกให้ตารางนี้: {inverter['model']} "
+            f"จำนวน {inverter_qty_input} เครื่อง — ตารางด้านล่างจะแสดงชุด Inverter, MPPT และ String ที่จัดให้"
+        )
     st.markdown("<div style='background:#fff2cc;border-left:5px solid #d6b656;padding:10px;border-radius:4px'>🟨 <b>ช่องที่ต้องกรอก:</b> Roof ID, Zone, Group ID, จำนวนแผง, Orientation, Tilt, Azimuth และ Shading. จำนวนแผงต่อ String ต้องเป็นเลขคู่ และ String ต่างกันไม่เกิน 2 แผง. คอลัมน์ <b>เลือก Inverter</b> ใช้ AUTO หรือระบุ INVxx ราย String ได้ • หลัง copy/paste จาก Excel ให้กด <b>บันทึกข้อมูลและคำนวณใหม่</b> • One-way cable เว้นว่างเพื่อกรอกภายหลังได้</div>", unsafe_allow_html=True)
     st.caption("กรอกจาก drone, DWG หรือ survey • one-way cable คือระยะจริงขาเดียว • กด Submit ก่อนเปลี่ยนรุ่น/จำนวน Inverter")
     if st.session_state.pop("roof_saved_notice", False):
@@ -449,6 +507,7 @@ with tab1:
         * module_power / 1000,
     )
     inverter_by_row = {}
+    inverter_model_by_row = {}
     mppt_by_row = {}
     input_by_row = {}
     mppt_total_modules_by_row = {}
@@ -457,6 +516,14 @@ with tab1:
             "source_row"
         ).set_index("source_row")
         inverter_by_row = assignment_lookup["inverter_id"].to_dict()
+        inverter_model_by_row = {
+            row_no: (
+                inverter["model"]
+                if str(inverter_id) != "UNASSIGNED"
+                else f"{inverter['model']} (ยังไม่จัด)"
+            )
+            for row_no, inverter_id in inverter_by_row.items()
+        }
         mppt_by_row = assignment_lookup["mppt_no"].to_dict()
         input_by_row = assignment_lookup["input_no"].to_dict()
         mppt_total_modules_by_row = assignment_lookup[
@@ -478,6 +545,14 @@ with tab1:
     )
     candidate_editor_frame.insert(
         candidate_editor_frame.columns.get_loc("inverter_id") + 1,
+        "inverter_model",
+        [
+            inverter_model_by_row.get(row_no, "-")
+            for row_no in candidate_editor_frame.index
+        ],
+    )
+    candidate_editor_frame.insert(
+        candidate_editor_frame.columns.get_loc("inverter_model") + 1,
         "mppt_no",
         [mppt_by_row.get(row_no, pd.NA) for row_no in candidate_editor_frame.index],
     )
@@ -556,7 +631,10 @@ with tab1:
         # Assigned Inverter is rendered in the read-only result table below;
         # placing it inside this grid would shift pasted Excel cells.
         candidate_input_frame = candidate_editor_frame.drop(
-            columns=["inverter_id", "mppt_no", "input_no", "mppt_total_modules"]
+            columns=[
+                "inverter_id", "inverter_model", "mppt_no", "input_no",
+                "mppt_total_modules",
+            ]
         )
         candidate_editor_styler = candidate_input_frame.style.map(
             inverter_cell_style,
@@ -631,22 +709,24 @@ with tab1:
     st.markdown("**ผลการจัด Inverter ราย String**")
     assignment_preview = candidate_editor_frame[[
         "roof_id", "group_id", "modules", "string_kwp",
-        "inverter_override", "inverter_id", "mppt_no", "input_no",
+        "inverter_override", "inverter_id", "inverter_model", "mppt_no", "input_no",
         "mppt_total_modules",
     ]].rename(columns={
         "roof_id": "Roof ID",
-        "group_id": "Group ID",
+        "group_id": "String ID",
         "modules": "Modules",
         "string_kwp": "DC (kWp)",
         "inverter_override": "เลือก Inverter",
         "inverter_id": "Assigned Inverter",
+        "inverter_model": "Inverter model",
         "mppt_no": "MPPT",
-        "input_no": "Input",
+        "input_no": "String",
         "mppt_total_modules": "MPPT total modules",
     })
     assignment_preview_styler = (
         assignment_preview.style
         .format({"DC (kWp)": "{:,.3f}"}, na_rep="-")
+        .apply(assignment_row_style, axis=1)
         .map(inverter_cell_style, subset=["Assigned Inverter"])
     )
     st.dataframe(
@@ -655,13 +735,14 @@ with tab1:
         hide_index=True,
         column_config={
             "Roof ID": st.column_config.TextColumn(width="small"),
-            "Group ID": st.column_config.TextColumn(width="small"),
+            "String ID": st.column_config.TextColumn(width="small"),
             "Modules": st.column_config.NumberColumn(width="small"),
             "DC (kWp)": st.column_config.NumberColumn(width="small"),
             "เลือก Inverter": st.column_config.TextColumn(width="small"),
             "Assigned Inverter": st.column_config.TextColumn(width="small"),
+            "Inverter model": st.column_config.TextColumn(width="medium"),
             "MPPT": st.column_config.NumberColumn(width="small"),
-            "Input": st.column_config.NumberColumn(width="small"),
+            "String": st.column_config.NumberColumn(width="small"),
             "MPPT total modules": st.column_config.NumberColumn(width="small"),
         },
     )
@@ -681,10 +762,37 @@ with tab2:
             f"จำนวนแผงรวม {total_modules:,} เป็นเลขคี่ — กรุณาปรับเป็นเลขคู่ เนื่องจาก Rapid Shutdown / Optimizer ใช้อัตรา 2:1"
         )
     st.caption("เกณฑ์ Engine: ทุก String เป็นเลขคู่ และจำนวนแผงระหว่าง String ต่างกันไม่เกิน 2 แผง")
+    auto_layout_inverter_options = [
+        "AUTO (ใช้รุ่นที่เลือกจากหน้า 1)",
+        *master_inverters["inverter_id"].tolist(),
+    ]
+    auto_layout_inverter_choice = st.selectbox(
+        "เลือกกลุ่ม Inverter สำหรับกำหนด DC max V",
+        auto_layout_inverter_options,
+        index=0,
+        help="DC max V ใช้กำหนดจำนวนแผงสูงสุดต่อ String; ระบบจะตรวจ MPPT min/startup และ safety factor ร่วมด้วย",
+    )
+    if auto_layout_inverter_choice.startswith("AUTO"):
+        auto_layout_inverter = inverter
+    else:
+        auto_layout_inverter = master_inverters.loc[
+            master_inverters["inverter_id"].eq(auto_layout_inverter_choice)
+        ].iloc[0].to_dict()
+    auto_layout_limits = calculate_string_limits(
+        module, auto_layout_inverter, tmin, tcell_max, safety_factor
+    )
+    if auto_layout_limits:
+        st.caption(
+            f"ใช้ {auto_layout_inverter['model']} | DC max V = {float(auto_layout_inverter['dc_max_v']):,.0f} V | "
+            f"Nmin MPPT = {auto_layout_limits['nmin_mppt']} | Nmax design = {auto_layout_limits['nmax_design']} แผง — "
+            "DC max V เป็นเพดานแรงดันฝั่ง PV ไม่ใช่กำลัง AC ของ Inverter"
+        )
     if design.get("critical_missing"):
         st.error("ต้องกรอก datasheet inverter ให้ครบก่อนสร้างคำแนะนำ")
+    elif not auto_layout_limits:
+        st.error("Inverter กลุ่มนี้ยังไม่มีค่า DC max V / MPPT ที่ยืนยันแล้ว")
     else:
-        auto_groups = recommend_string_groups(total_modules, design["limits"], module_power)
+        auto_groups = recommend_string_groups(total_modules, auto_layout_limits, module_power)
         st.caption("คำแนะนำเริ่มจาก string ที่ใกล้เคียงกันและอยู่ในช่วงแรงดันที่ผ่าน จากนั้นจึงนำไปแยก MPPT")
         if not auto_groups.empty:
             a1, a2, a3 = st.columns(3)
@@ -706,9 +814,9 @@ with tab2:
         st.caption("WARNING ของ DC/AC ratio ต่ำ (<0.80) ไม่ได้แปลว่าออกแบบไม่ได้ แต่ควรทบทวนจำนวน inverter, redundancy และเป้าหมายการผลิต")
         st.subheader("ผลตรวจ Candidate strings ปัจจุบัน")
         metrics = st.columns(4)
-        metrics[0].metric("Nmin MPPT", f"{design['limits']['nmin_mppt']} modules")
-        metrics[1].metric("Nmax design", f"{design['limits']['nmax_design']} modules")
-        metrics[2].metric("Nmax absolute", f"{design['limits']['nmax_absolute']} modules")
+        metrics[0].metric("Nmin MPPT", f"{auto_layout_limits['nmin_mppt']} modules")
+        metrics[1].metric("Nmax design", f"{auto_layout_limits['nmax_design']} modules")
+        metrics[2].metric("Nmax absolute", f"{auto_layout_limits['nmax_absolute']} modules")
         metrics[3].metric("Total DC", f"{design['strings']['string_kwp'].sum():,.3f} kWp")
         totals_bar(design["strings"], "ยอดรวม Candidate Strings", design.get("total_ac_kw"))
         display(design["strings"], ["electrical_status"])

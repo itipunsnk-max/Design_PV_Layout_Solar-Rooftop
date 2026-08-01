@@ -135,6 +135,26 @@ def test_auto_inverter_uses_minimum_quantity_and_keeps_mppt_strings_equal():
     )
 
 
+def test_auto_comparison_counts_voltage_invalid_strings_as_unassigned():
+    module = DEFAULT_MODULES.iloc[0].to_dict()
+    raw = pd.DataFrame(
+        [["RF01", "Upper", "G01", 24, "AUTO", "Portrait", 10, 180, "Low", 35],
+         ["RF01", "Upper", "G02", 26, "AUTO", "Portrait", 10, 180, "Low", 40]],
+        columns=["roof_id", "zone", "group_id", "modules", "inverter_override",
+                 "orientation", "tilt_deg", "azimuth_deg", "shading", "one_way_m"],
+    )
+    options = recommend_inverter_options(
+        module=module, module_power_w=725, tmin_c=10, tcell_max_c=70,
+        safety_factor=0.95, max_dcac=1.4, cable_material="Copper",
+        cable_size_mm2=6, max_voltage_drop=0.015, max_dc_loss=0.015,
+        strings=raw, inverter_master=DEFAULT_INVERTERS,
+    )
+    sg36 = options[options["inverter_id"] == "SG36CX-P2"].iloc[0]
+    assert sg36["status"] == "FAIL"
+    assert sg36["assigned_strings"] == 0
+    assert sg36["unassigned_strings"] == 2
+
+
 def test_design_is_balanced_and_exported_by_inverter_set():
     module = DEFAULT_MODULES.iloc[0].to_dict()
     inverter = DEFAULT_INVERTERS.query("inverter_id == 'SG125CX-P2'").iloc[0].to_dict()

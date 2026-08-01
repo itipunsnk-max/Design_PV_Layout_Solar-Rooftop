@@ -35,6 +35,30 @@ STRING_MODULE_STEP = 2
 MAX_STRING_MODULE_DIFFERENCE = 2
 
 
+def calculate_string_limits(
+    module: dict[str, Any],
+    inverter: dict[str, Any],
+    tmin_c: float,
+    tcell_max_c: float,
+    safety_factor: float,
+) -> dict[str, float]:
+    """Calculate voltage-derived String limits for a selected Inverter."""
+    required = ["dc_max_v", "startup_v", "mppt_min_v", "mppt_max_v"]
+    if any(pd.isna(inverter.get(field)) for field in required):
+        return {}
+    beta_voc = abs(float(module["beta_voc_pct_c"])) / 100
+    beta_vmp = float(module["beta_vmp_pct_c"]) / 100
+    voc_cold = float(module["voc_v"]) * (1 + beta_voc * (25 - tmin_c))
+    vmp_hot = float(module["vmp_v"]) * (1 + beta_vmp * (tcell_max_c - 25))
+    return {
+        "voc_cold_v": voc_cold,
+        "vmp_hot_v": vmp_hot,
+        "nmax_absolute": math.floor(float(inverter["dc_max_v"]) / voc_cold),
+        "nmax_design": math.floor(float(inverter["dc_max_v"]) * safety_factor / voc_cold),
+        "nmin_mppt": math.ceil(float(inverter["mppt_min_v"]) / vmp_hot),
+    }
+
+
 def _balanced_string_sizes(
     total_modules: int,
     string_count: int,
@@ -169,7 +193,8 @@ def recommend_inverter_options(
                 "assigned_strings": int(len(valid_modules)),
                 "unassigned_strings": 0,
                 "used_mppt": 0,
-                "total_mppt": int(inverter["mppt_qty"]) * int(inverter["inputs_per_mppt"]),
+                "total_mppt": int(inverter["mppt_qty"]),
+                "total_inputs": int(inverter["mppt_qty"]) * int(inverter["inputs_per_mppt"]),
                 "status": "FAIL",
                 "comment": "ต้องแก้จำนวนแผงให้เป็นเลขคู่ และต่างกันไม่เกิน 2 แผงก่อนเลือก AUTO",
             })
@@ -198,6 +223,10 @@ def recommend_inverter_options(
                 not last_design["strings"].empty
                 and (last_design["strings"]["electrical_status"] == "PASS").all()
             )
+            if not string_pass:
+                # Voltage/current validity is independent of inverter quantity;
+                # retrying up to 50 units cannot make an invalid String valid.
+                break
             assignment_pass = (
                 not last_design["assignments"].empty
                 and (last_design["assignments"]["assignment_status"] == "PASS").all()
@@ -210,9 +239,20 @@ def recommend_inverter_options(
 
         if best is None:
             assignments = last_design.get("assignments", pd.DataFrame()) if last_design else pd.DataFrame()
-            assigned = int((assignments.get("assignment_status") == "PASS").sum()) if not assignments.empty else 0
-            unassigned = int((assignments.get("assignment_status") != "PASS").sum()) if not assignments.empty else None
+            candidate_strings = last_design.get("strings", pd.DataFrame()) if last_design else pd.DataFrame()
+            total_strings = int(len(candidate_strings))
+            string_pass = (
+                not candidate_strings.empty
+                and candidate_strings["electrical_status"].eq("PASS").all()
+            )
+            assigned = int((assignments.get("assignment_status") == "PASS").sum()) if not assignments.empty and string_pass else 0
+            unassigned = total_strings - assigned if total_strings else None
             warnings = (last_design or {}).get("input_warnings", [])
+            if not string_pass:
+                warnings = [
+                    *warnings,
+                    "String ไม่ผ่านช่วง DC voltage/current ของ Inverter รุ่นนี้",
+                ]
             rows.append({
                 "inverter_id": inverter.get("inverter_id"),
                 "inverter_model": inverter.get("model"),
@@ -220,8 +260,9 @@ def recommend_inverter_options(
                 "dc_ac_ratio": (last_design or {}).get("actual_dcac_ratio"),
                 "assigned_strings": assigned,
                 "unassigned_strings": unassigned,
-                "used_mppt": int(assignments["mppt_no"].nunique()) if not assignments.empty else 0,
-                "total_mppt": int(inverter["mppt_qty"]) * int(inverter["inputs_per_mppt"]),
+                "used_mppt": int(assignments["mppt_no"].nunique()) if not assignments.empty and string_pass else 0,
+                "total_mppt": int(inverter["mppt_qty"]),
+                "total_inputs": int(inverter["mppt_qty"]) * int(inverter["inputs_per_mppt"]),
                 "status": "FAIL",
                 "comment": "; ".join(warnings) or "ไม่สามารถจัด String ลง MPPT ได้ครบตามเกณฑ์",
             })
@@ -236,7 +277,8 @@ def recommend_inverter_options(
             "assigned_strings": int(len(assignments)),
             "unassigned_strings": 0,
             "used_mppt": int(assignments["mppt_no"].nunique()),
-            "total_mppt": int(inverter["mppt_qty"]) * int(quantity),
+            "total_mppt": int(inverter["mppt_qty"]),
+            "total_inputs": int(inverter["mppt_qty"]) * int(quantity) * int(inverter["inputs_per_mppt"]),
             "status": "PASS",
             "comment": "ผ่านเกณฑ์จำนวน String คู่, เกลี่ยต่างกันไม่เกิน 2 แผง และจัด MPPT ได้ครบ",
         })
@@ -251,14 +293,11 @@ def calculate_design(*, module: dict[str, Any], inverter: dict[str, Any], module
     if any(pd.isna(inverter.get(x)) for x in required):
         return {"limits": {}, "strings": pd.DataFrame(), "assignments": pd.DataFrame(),
                 "inverter_summary": pd.DataFrame(), "cables": pd.DataFrame(), "critical_missing": True}
-    beta_voc = abs(float(module["beta_voc_pct_c"])) / 100
-    beta_vmp = float(module["beta_vmp_pct_c"]) / 100
-    voc_cold = float(module["voc_v"]) * (1 + beta_voc * (25 - tmin_c))
-    vmp_hot = float(module["vmp_v"]) * (1 + beta_vmp * (tcell_max_c - 25))
-    limits = {"voc_cold_v": voc_cold, "vmp_hot_v": vmp_hot,
-              "nmax_absolute": math.floor(float(inverter["dc_max_v"]) / voc_cold),
-              "nmax_design": math.floor(float(inverter["dc_max_v"]) * safety_factor / voc_cold),
-              "nmin_mppt": math.ceil(float(inverter["mppt_min_v"]) / vmp_hot)}
+    limits = calculate_string_limits(
+        module, inverter, tmin_c, tcell_max_c, safety_factor
+    )
+    voc_cold = limits["voc_cold_v"]
+    vmp_hot = limits["vmp_hot_v"]
     # Streamlit's dynamic editor can keep an incomplete final row.  Ignore it
     # deliberately and report it back to the UI; never coerce missing modules to 0.
     working = strings.copy().reset_index(drop=True)
