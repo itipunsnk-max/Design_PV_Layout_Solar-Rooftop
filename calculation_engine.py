@@ -65,33 +65,67 @@ def _balanced_string_sizes(
     nmin: int,
     nmax: int,
 ) -> list[int] | None:
-    """Return even string sizes whose spread is at most two modules."""
-    if total_modules % STRING_MODULE_STEP:
-        return None
+    """Return balanced sizes; an odd total may use one odd remainder String."""
     first_even = math.ceil(nmin / STRING_MODULE_STEP) * STRING_MODULE_STEP
     last_even = math.floor(nmax / STRING_MODULE_STEP) * STRING_MODULE_STEP
     if first_even > last_even or string_count <= 0:
         return None
-    for low in range(first_even, last_even + 1, STRING_MODULE_STEP):
-        remainder = total_modules - low * string_count
-        if remainder < 0 or remainder % STRING_MODULE_STEP:
+
+    if total_modules % STRING_MODULE_STEP == 0:
+        for low in range(first_even, last_even + 1, STRING_MODULE_STEP):
+            remainder = total_modules - low * string_count
+            if remainder < 0 or remainder % STRING_MODULE_STEP:
+                continue
+            higher_count = remainder // STRING_MODULE_STEP
+            if higher_count > string_count:
+                continue
+            high = low + STRING_MODULE_STEP
+            if higher_count and high > last_even:
+                continue
+            sizes = [high] * higher_count + [low] * (string_count - higher_count)
+            if sizes and max(sizes) - min(sizes) <= MAX_STRING_MODULE_DIFFERENCE:
+                return sizes
+        return None
+
+    # Odd total: reserve exactly one odd String for the remainder. All other
+    # Strings remain even and the complete group must still be balanced.
+    for odd_size in range(max(nmin, 1), nmax + 1):
+        if odd_size % STRING_MODULE_STEP == 0:
             continue
-        higher_count = remainder // STRING_MODULE_STEP
-        if higher_count > string_count:
+        even_string_count = string_count - 1
+        if even_string_count == 0:
+            if odd_size == total_modules:
+                return [odd_size]
             continue
-        high = low + STRING_MODULE_STEP
-        if higher_count and high > last_even:
+        remainder = total_modules - odd_size
+        if remainder < 0:
             continue
-        sizes = [high] * higher_count + [low] * (string_count - higher_count)
-        if sizes and max(sizes) - min(sizes) <= MAX_STRING_MODULE_DIFFERENCE:
-            return sizes
+        for low in range(first_even, last_even + 1, STRING_MODULE_STEP):
+            high = low + STRING_MODULE_STEP
+            low_remainder = remainder - low * even_string_count
+            if low_remainder < 0 or low_remainder % STRING_MODULE_STEP:
+                continue
+            if high > last_even:
+                if low_remainder:
+                    continue
+                high = low
+            higher_count = low_remainder // STRING_MODULE_STEP
+            if higher_count > even_string_count:
+                continue
+            sizes = (
+                [odd_size]
+                + [high] * higher_count
+                + [low] * (even_string_count - higher_count)
+            )
+            if sizes and max(sizes) - min(sizes) <= MAX_STRING_MODULE_DIFFERENCE:
+                return sizes
     return None
 
 
 def recommend_string_groups(total_modules: int, limits: dict[str, Any], module_power_w: float = 0) -> pd.DataFrame:
-    """Split modules into even, near-equal strings suitable for 2:1 devices."""
+    """Split modules into near-equal Strings; odd totals reserve one odd remainder."""
     columns = ["string_id", "modules", "string_kwp", "recommendation"]
-    if total_modules <= 0 or not limits or total_modules % STRING_MODULE_STEP:
+    if total_modules <= 0 or not limits:
         return pd.DataFrame(columns=columns)
     nmin, nmax = int(limits["nmin_mppt"]), int(limits["nmax_design"])
     if nmin > nmax:
@@ -101,14 +135,19 @@ def recommend_string_groups(total_modules: int, limits: dict[str, Any], module_p
     while string_count <= max_string_count:
         sizes = _balanced_string_sizes(total_modules, string_count, nmin, nmax)
         if sizes is not None:
+            odd_count = sum(size % STRING_MODULE_STEP for size in sizes)
+            if odd_count:
+                recommendation = (
+                    "WARNING: เศษเหลือลง 1 String เป็นเลขคี่; String อื่นเป็นเลขคู่ "
+                    "และต่างกันไม่เกิน 2 แผง"
+                )
+            else:
+                recommendation = "นำไปจัด MPPT ต่อ (จำนวนคู่; ต่างกันไม่เกิน 2 แผง)"
             return pd.DataFrame({
                 "string_id": [f"AUTO-S{i+1:02d}" for i in range(string_count)],
                 "modules": sizes,
                 "string_kwp": [size * module_power_w / 1000 for size in sizes],
-                "recommendation": [
-                    "นำไปจัด MPPT ต่อ (จำนวนคู่; ต่างกันไม่เกิน 2 แผง)"
-                    for _ in sizes
-                ],
+                "recommendation": [recommendation for _ in sizes],
             })
         string_count += 1
     return pd.DataFrame(columns=columns)
@@ -160,10 +199,11 @@ def recommend_inverter_options(
     )
     total_dc_kwp = float(numeric_modules.fillna(0).sum()) * module_power_w / 1000
     valid_modules = numeric_modules.dropna()
+    odd_string_count = int((valid_modules % STRING_MODULE_STEP != 0).sum())
     invalid_string_criteria = (
         not valid_modules.empty
         and (
-            (valid_modules % STRING_MODULE_STEP != 0).any()
+            odd_string_count > 1
             or int(valid_modules.max() - valid_modules.min()) > MAX_STRING_MODULE_DIFFERENCE
         )
     )
@@ -224,7 +264,7 @@ def recommend_inverter_options(
             )
             string_pass = (
                 not last_design["strings"].empty
-                and (last_design["strings"]["electrical_status"] == "PASS").all()
+                and last_design["strings"]["electrical_status"].isin(["PASS", "WARNING"]).all()
             )
             if not string_pass:
                 # Voltage/current validity is independent of inverter quantity;
@@ -246,7 +286,7 @@ def recommend_inverter_options(
             total_strings = int(len(candidate_strings))
             string_pass = (
                 not candidate_strings.empty
-                and candidate_strings["electrical_status"].eq("PASS").all()
+                and candidate_strings["electrical_status"].isin(["PASS", "WARNING"]).all()
             )
             assigned = int((assignments.get("assignment_status") == "PASS").sum()) if not assignments.empty and string_pass else 0
             total_inputs = int(inverter["mppt_qty"]) * int(inverter["inputs_per_mppt"]) * int(attempted_quantity)
@@ -275,6 +315,7 @@ def recommend_inverter_options(
         assignments = best["assignments"]
         total_inputs = int(inverter["mppt_qty"]) * int(inverter["inputs_per_mppt"]) * int(quantity)
         assigned = int(len(assignments))
+        has_string_warning = best["strings"]["electrical_status"].eq("WARNING").any()
         rows.append({
             "inverter_id": inverter.get("inverter_id"),
             "inverter_model": inverter.get("model"),
@@ -285,8 +326,13 @@ def recommend_inverter_options(
             "used_mppt": int(assignments["mppt_no"].nunique()),
             "total_mppt": int(inverter["mppt_qty"]),
             "total_inputs": total_inputs,
-            "status": "PASS",
-            "comment": "ผ่านเกณฑ์จำนวน String คู่, เกลี่ยต่างกันไม่เกิน 2 แผง และจัด MPPT ได้ครบ",
+            "status": "WARNING" if has_string_warning else "PASS",
+            "comment": (
+                "คำนวณต่อได้ แต่มีเศษเหลือ 1 String เป็นเลขคี่; "
+                "จัด MPPT ได้ครบและ String อื่นต่างกันไม่เกิน 2 แผง"
+                if has_string_warning else
+                "ผ่านเกณฑ์จำนวน String คู่, เกลี่ยต่างกันไม่เกิน 2 แผง และจัด MPPT ได้ครบ"
+            ),
         })
     return pd.DataFrame(rows)
 
@@ -329,6 +375,8 @@ def calculate_design(*, module: dict[str, Any], inverter: dict[str, Any], module
         "required_even": True,
         "max_difference": MAX_STRING_MODULE_DIFFERENCE,
         "is_even_and_balanced": True,
+        "single_odd_allowed": False,
+        "odd_string_count": 0,
         "min_modules": None,
         "max_modules": None,
         "difference": 0,
@@ -346,17 +394,28 @@ def calculate_design(*, module: dict[str, Any], inverter: dict[str, Any], module
     min_modules = int(module_counts.min())
     max_modules = int(module_counts.max())
     module_difference = max_modules - min_modules
+    odd_string_count = int((module_counts % STRING_MODULE_STEP != 0).sum())
     balanced_strings = module_difference <= MAX_STRING_MODULE_DIFFERENCE
+    single_odd_allowed = odd_string_count == 1 and balanced_strings
     string_constraints.update({
         "is_even_and_balanced": odd_strings.empty and balanced_strings,
+        "single_odd_allowed": single_odd_allowed,
+        "odd_string_count": odd_string_count,
         "min_modules": min_modules,
         "max_modules": max_modules,
         "difference": module_difference,
     })
     if not odd_strings.empty:
-        input_warnings.append(
-            "จำนวนแผงต่อ String ต้องเป็นเลขคู่เพื่อรองรับ Rapid Shutdown / Optimizer 2:1"
-        )
+        if single_odd_allowed:
+            input_warnings.append(
+                "WARNING: พบ String เลขคี่ 1 String — ระบบจะนำเศษเหลือลง String เดียวและคำนวณต่อ "
+                "แต่ควรตรวจ Rapid Shutdown / Optimizer 2:1 เพิ่มเติม"
+            )
+        else:
+            input_warnings.append(
+                "จำนวนแผงต่อ String ต้องเป็นเลขคู่ หรือมีเลขคี่ได้ไม่เกิน 1 String "
+                "เพื่อรองรับ Rapid Shutdown / Optimizer 2:1"
+            )
     if not balanced_strings:
         input_warnings.append(
             f"จำนวนแผงต่อ String ต่างกัน {module_difference} แผง เกินเกณฑ์ไม่เกิน {MAX_STRING_MODULE_DIFFERENCE} แผง"
@@ -366,8 +425,7 @@ def calculate_design(*, module: dict[str, Any], inverter: dict[str, Any], module
     for i, r in working.reset_index(drop=True).iterrows():
         n = int(r["modules"])
         v_cold, v_hot, v_stc = n * voc_cold, n * vmp_hot, n * float(module["vmp_v"])
-        status = _status(
-            n % STRING_MODULE_STEP == 0,
+        electrical_checks_pass = all((
             balanced_strings,
             n >= limits["nmin_mppt"],
             n <= limits["nmax_design"],
@@ -376,9 +434,21 @@ def calculate_design(*, module: dict[str, Any], inverter: dict[str, Any], module
             v_hot <= inverter["mppt_max_v"],
             v_cold <= inverter["dc_max_v"],
             float(module["imp_a"]) <= inverter["max_i_input_a"],
-        )
-        if n % STRING_MODULE_STEP:
-            comment = "จำนวนแผงต้องเป็นเลขคู่สำหรับ Rapid Shutdown / Optimizer 2:1"
+        ))
+        if not electrical_checks_pass:
+            status = "FAIL"
+        elif n % STRING_MODULE_STEP and single_odd_allowed:
+            status = "WARNING"
+        elif n % STRING_MODULE_STEP:
+            status = "FAIL"
+        else:
+            status = "PASS"
+        if n % STRING_MODULE_STEP and single_odd_allowed:
+            comment = (
+                "WARNING: เศษเหลือลง String นี้เป็นเลขคี่; ตรวจ Rapid Shutdown / Optimizer 2:1"
+            )
+        elif n % STRING_MODULE_STEP:
+            comment = "จำนวนแผงต้องเป็นเลขคู่ หรือมีเลขคี่ได้ไม่เกิน 1 String"
         elif not balanced_strings:
             comment = f"จำนวนแผงในกลุ่มต่างกันเกิน {MAX_STRING_MODULE_DIFFERENCE} แผง"
         else:
@@ -605,11 +675,24 @@ def qa_summary(design: dict[str, Any], module: dict[str, Any], inverter: dict[st
     string_criteria_pass = design.get("string_constraints", {}).get(
         "is_even_and_balanced", False
     )
+    single_odd_allowed = design.get("string_constraints", {}).get(
+        "single_odd_allowed", False
+    )
+    string_criteria_result = (
+        "PASS" if string_criteria_pass
+        else "WARNING" if single_odd_allowed
+        else "FAIL"
+    )
+    string_electrical_result = (
+        "PASS"
+        if strings.empty or strings["electrical_status"].isin(["PASS", "WARNING"]).all()
+        else "FAIL"
+    )
     rows = [
         ["QA-01","Module suffix provided","Critical","PASS" if suffix.strip() else "FAIL","Module","Enter verified full suffix","No"],
         ["QA-02","Equipment revision verified","Critical","PASS" if module["verification_status"] == "Verified" and inverter["verification_status"] == "Verified" else "FAIL","Master data","Verify datasheet revision / market","No"],
-        ["QA-03","String module count is even and balanced","Critical","PASS" if string_criteria_pass else "FAIL","String Designer","Use Auto-layout or make every String even and within 2 modules","No"],
-        ["QA-04","All candidate strings voltage valid","Critical","PASS" if (strings.electrical_status == "PASS").all() else "FAIL","String Designer","Review string length / voltage window","No"],
+        ["QA-03","String module count is even and balanced or has one odd remainder","Warning" if single_odd_allowed else "Critical",string_criteria_result,"String Designer","Use Auto-layout; if total is odd, keep only one odd remainder String","No"],
+        ["QA-04","All candidate strings voltage valid","Critical",string_electrical_result,"String Designer","Review string length / voltage window","No"],
         ["QA-05","All strings assigned to compatible MPPT","Critical","PASS" if (assignments.assignment_status == "PASS").all() else "FAIL","MPPT Assignment","Add inverter/MPPT or revise groups","No"],
         ["QA-06","DC cable voltage drop and loss","Warning","PASS" if (cables.cable_status == "PASS").all() else "WARNING","DC Cable","Increase cable size or reduce route length","No"],
         ["QA-07","PAN and OND files supplied","Warning","PASS" if module["pan_file"] != "REQUIRES VERIFICATION" and inverter["ond_file"] != "REQUIRES VERIFICATION" else "WARNING","PVsyst","Add verified PAN / OND files","No"],

@@ -120,7 +120,8 @@ Master Data + Design Basis + Roof Groups
    - เลือก `AUTO` เพื่อให้ระบบเปรียบเทียบรุ่นที่ผ่านเกณฑ์และใช้จำนวนเครื่องน้อยที่สุด
    - รุ่นที่ AUTO เลือกจะแสดงในข้อความใต้ช่องเลือก และถูกนำไปใช้ใน Candidate strings / MPPT
 2. **จำนวนแผงรวมที่มี** ในหน้า **2. Auto-layout & String**  
-   - ต้องเป็นเลขคู่ เพราะ Rapid Shutdown / Optimizer อัตรา 2:1
+   - ควรเป็นเลขคู่ เพราะ Rapid Shutdown / Optimizer อัตรา 2:1
+   - หากยอดรวมเป็นเลขคี่ ระบบจะนำเศษลง 1 String, แสดง `WARNING` และยังคำนวณต่อได้
    - Engine จะจัด String ให้มีจำนวนแผงต่างกันไม่เกิน 2 แผง
 3. **Scope แรงดัน DC max V** ในหน้า **2. Auto-layout & String**  
    - ตัวเลือกจะแสดงเฉพาะค่า `dc_max_v` ที่มีอยู่ในตาราง Master Inverter เท่านั้น (เช่น 1100 V และ 1500 V)
@@ -296,6 +297,12 @@ MPPT min voltage <= String Vmp_hot <= MPPT max voltage
 String Voc_cold <= Inverter DC max voltage
 Module Imp <= max current per input
 ```
+
+เกณฑ์จำนวนแผง:
+
+- ยอดรวมเป็นเลขคู่: ทุก String ต้องเป็นเลขคู่
+- ยอดรวมเป็นเลขคี่: อนุญาตให้มี String เลขคี่ได้ 1 String เท่านั้น, สถานะ `WARNING`
+- จำนวนแผงระหว่าง String ต่างกันไม่เกิน 2 แผง
 
 ### 6.5 กระแสของ MPPT เมื่อขนานหลาย String
 

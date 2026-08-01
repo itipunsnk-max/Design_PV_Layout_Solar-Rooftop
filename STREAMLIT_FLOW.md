@@ -88,11 +88,14 @@ flowchart TD
 ### หน้า 2 — Auto-layout & String
 
 1. รับจำนวนแผงรวม
-2. ตรวจว่าจำนวนรวมเป็นเลขคู่ เนื่องจาก Rapid Shutdown / Optimizer อัตรา 2:1
+2. ตรวจว่าจำนวนรวมเป็นเลขคู่ เนื่องจาก Rapid Shutdown / Optimizer อัตรา 2:1; ถ้าเป็นเลขคี่จะแสดง WARNING และลงเศษใน 1 String
 3. เลือก `AUTO (อ้างอิง Inverter จากหน้า 1)` หรือเลือก DC max V ที่มีจริงใน Master Inverter
 4. คำนวณช่วงจำนวนแผงต่อ String
 5. เกลี่ย String ให้จำนวนแผงเป็นเลขคู่ และแต่ละ String ต่างกันไม่เกิน 2 แผง
+   หากยอดรวมเป็นเลขคี่ จะมี String เลขคี่เป็นเศษ 1 String และแสดง `WARNING`
 6. ผู้ใช้กด **ใช้ Auto-layout แทน Candidate strings** เพื่อส่งผลกลับไปหน้า 1
+
+> หากจำนวนรวมเป็นเลขคี่ ระบบยังคำนวณได้โดยนำเศษลง 1 String เท่านั้น; String นั้นจะเป็น `WARNING` และยังต้องต่างกันไม่เกิน 2 แผง
 
 เมื่อเลือก DC max V แบบกำหนดเอง โปรแกรมจะ override เฉพาะ `dc_max_v` ส่วน MPPT min/max และ startup จะยังอ้างอิง Inverter ที่เลือกจากหน้า 1
 
@@ -166,7 +169,7 @@ Initial string count = MAX(1, CEILING(Total modules ÷ Nmax_design))
 จากนั้นเพิ่มจำนวน String ทีละ 1 จนพบการแบ่งที่ผ่านเงื่อนไข:
 
 ```text
-ทุก String เป็นเลขคู่
+ทุก String เป็นเลขคู่เมื่อยอดรวมเป็นเลขคู่; ถ้ายอดรวมเป็นเลขคี่ให้มีเลขคี่ได้เพียง 1 String
 Nmin_MPPT ≤ จำนวนแผงต่อ String ≤ Nmax_design
 MAX(จำนวนแผงต่อ String) − MIN(จำนวนแผงต่อ String) ≤ 2
 ผลรวมจำนวนแผงทุก String = Total modules
@@ -180,7 +183,16 @@ high = low + 2
 จำนวน String ขนาด high = จำนวนแผงที่เหลือ ÷ 2
 ```
 
-ถ้าจำนวนแผงรวมเป็นเลขคี่ หรือไม่สามารถแบ่งให้ผ่านทุกเงื่อนไข โปรแกรมจะไม่สร้างคำแนะนำ Auto-layout และแจ้งเตือนผู้ใช้
+กรณียอดรวมเป็นเลขคี่ ระบบจะสำรอง 1 String เป็นเศษเลขคี่:
+
+```text
+จำนวน String ที่เหลือ = จำนวน String ทั้งหมด − 1
+จำนวนแผงที่เหลือ = Total modules − odd_size
+จำนวน String ขนาด high
+    = (จำนวนแผงที่เหลือ − (low × จำนวน String ที่เหลือ)) ÷ 2
+```
+
+ถ้าจำนวนแผงรวมเป็นเลขคี่ ระบบยังสร้างคำแนะนำได้โดยนำเศษเหลือลง 1 String และคงสถานะ `WARNING`; ถ้าแบ่งให้ต่างกันไม่เกิน 2 แผงไม่ได้ หรือมีเลขคี่เกิน 1 String จะไม่สร้างคำแนะนำ
 
 ### 3.5 เงื่อนไขผ่านของแต่ละ String
 
@@ -195,7 +207,7 @@ String Vmp STC  = n × Vmp_STC
 String จะเป็น `PASS` เมื่อผ่านทุกข้อ:
 
 ```text
-n เป็นเลขคู่
+ถ้ายอดรวมเป็นเลขคู่: `n` เป็นเลขคู่; ถ้ายอดรวมเป็นเลขคี่: มี `n` เป็นเลขคี่ได้ 1 String เท่านั้น
 จำนวนแผงในกลุ่มต่างกันไม่เกิน 2 แผง
 n ≥ Nmin_MPPT
 n ≤ Nmax_design
@@ -264,7 +276,7 @@ Minimum DC quantity = CEILING(
 จากนั้นโปรแกรมจะทดลองจำนวนเครื่องตั้งแต่ค่าขั้นต่ำขึ้นไป จนพบแผนที่:
 
 ```text
-String electrical status ทุกแถว = PASS
+String electrical status ทุกแถว = PASS หรือ WARNING เฉพาะกรณีมีเศษ 1 String
 Assignment status ทุกแถว = PASS
 Actual DC/AC ratio ≤ Maximum DC/AC ratio
 ```
@@ -351,7 +363,7 @@ QA/QC checks หลัก:
 |---|---|
 | QA-01 | Module suffix ถูกกรอก |
 | QA-02 | Module และ Inverter มีสถานะ Verified |
-| QA-03 | String เป็นเลขคู่และต่างกันไม่เกิน 2 แผง |
+| QA-03 | String เป็นเลขคู่และต่างกันไม่เกิน 2 แผง; ยอดคี่อนุญาตเลขคี่ 1 String เป็น WARNING |
 | QA-04 | String ผ่านช่วงแรงดัน/กระแส |
 | QA-05 | String ถูกจัดลง MPPT ที่เข้ากันได้ |
 | QA-06 | Voltage drop และ Power loss ของสาย DC |
@@ -395,4 +407,3 @@ pytest -q
 ```bash
 python -c "import test_calculation_engine as t; tests=[n for n in dir(t) if n.startswith('test_')]; [getattr(t,n)() for n in tests]; print(f'{len(tests)} tests passed')"
 ```
-

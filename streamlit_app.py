@@ -516,7 +516,7 @@ with tab1:
             inverter_master=master_inverters,
         )
         passing_options = auto_inverter_options[
-            auto_inverter_options["status"] == "PASS"
+            auto_inverter_options["status"].isin(["PASS", "WARNING"])
         ].copy()
         if not passing_options.empty:
             best_option = passing_options.sort_values(
@@ -538,7 +538,7 @@ with tab1:
                 )
             chosen_options = auto_inverter_options[
                 auto_inverter_options["inverter_id"].eq(selected_inv)
-                & (auto_inverter_options["status"] == "PASS")
+                & auto_inverter_options["status"].isin(["PASS", "WARNING"])
             ]
             if chosen_options.empty:
                 st.error(
@@ -548,17 +548,21 @@ with tab1:
             else:
                 if inverter_qty_choice == "AUTO":
                     inverter_qty_input = int(chosen_options.iloc[0]["recommended_qty"])
-                st.success(
+                message = (
                     f"AUTO แนะนำ {inverter['model']} จำนวน {inverter_qty_input} เครื่อง "
-                    f"(เลือกจำนวน Inverter ต่ำสุดที่จัด String/MPPT ได้ครบ)"
+                    "(เลือกจำนวน Inverter ต่ำสุดที่จัด String/MPPT ได้ครบ)"
                 )
+                if str(chosen_options.iloc[0]["status"]) == "WARNING":
+                    st.warning(message + " — มี 1 String เป็นเลขคี่ ระบบนำเศษลง String เดียว")
+                else:
+                    st.success(message)
         else:
             st.error(
-                "AUTO ยังหาแผนที่ผ่านไม่ได้ — ตรวจให้ทุก String เป็นเลขคู่ "
-                "และจำนวนแผงแต่ละ String ต่างกันไม่เกิน 2 แผง"
+                "AUTO ยังหาแผนที่ผ่านไม่ได้ — ตรวจแรงดัน String, จำนวนแผง "
+                "และให้มี String เลขคี่ได้ไม่เกิน 1 String"
             )
         if selected_inv_choice == "AUTO":
-            st.caption("ตารางเปรียบเทียบ AUTO: เลือกแถว PASS ที่มีจำนวน Inverter น้อยที่สุด")
+            st.caption("ตารางเปรียบเทียบ AUTO: เลือกแถว PASS/WARNING ที่มีจำนวน Inverter น้อยที่สุด")
             display(auto_inverter_options, ["status"])
 
     st.subheader("Roof layout / Candidate strings")
@@ -567,7 +571,7 @@ with tab1:
             f"Inverter ที่ AUTO เลือกให้ตารางนี้: {inverter['model']} "
             f"จำนวน {inverter_qty_input} เครื่อง — ตารางด้านล่างจะแสดงชุด Inverter, MPPT และ String ที่จัดให้"
         )
-    st.markdown("<div style='background:#fff2cc;border-left:5px solid #d6b656;padding:10px;border-radius:4px'>🟨 <b>ช่องที่ต้องกรอก:</b> Roof ID, Zone, Group ID, จำนวนแผง, Orientation, Tilt, Azimuth และ Shading. จำนวนแผงต่อ String ต้องเป็นเลขคู่ และ String ต่างกันไม่เกิน 2 แผง. คอลัมน์ <b>เลือก Inverter</b> ใช้ AUTO หรือระบุ INVxx ราย String ได้ • หลัง copy/paste จาก Excel ให้กด <b>บันทึกข้อมูลและคำนวณใหม่</b> • One-way cable เว้นว่างเพื่อกรอกภายหลังได้</div>", unsafe_allow_html=True)
+    st.markdown("<div style='background:#fff2cc;border-left:5px solid #d6b656;padding:10px;border-radius:4px'>🟨 <b>ช่องที่ต้องกรอก:</b> Roof ID, Zone, Group ID, จำนวนแผง, Orientation, Tilt, Azimuth และ Shading. ปกติจำนวนแผงต่อ String เป็นเลขคู่; หากยอดรวมเป็นเลขคี่ ระบบจะนำเศษลง 1 String และแสดง WARNING. String ต่างกันไม่เกิน 2 แผง. คอลัมน์ <b>เลือก Inverter</b> ใช้ AUTO หรือระบุ INVxx ราย String ได้ • หลัง copy/paste จาก Excel ให้กด <b>บันทึกข้อมูลและคำนวณใหม่</b> • One-way cable เว้นว่างเพื่อกรอกภายหลังได้</div>", unsafe_allow_html=True)
     st.caption("กรอกจาก drone, DWG หรือ survey • one-way cable คือระยะจริงขาเดียว • กด Submit ก่อนเปลี่ยนรุ่น/จำนวน Inverter")
     if st.session_state.pop("roof_saved_notice", False):
         st.success("บันทึกข้อมูลตารางแล้ว และคำนวณ kWp / Inverter Set ใหม่เรียบร้อย")
@@ -798,9 +802,9 @@ with tab1:
                     "🟨 Group ID *", required=True, width="small"
                 ),
                 "modules": st.column_config.NumberColumn(
-                    "🟨 จำนวนแผง\n(แผงคู่)", min_value=1, step=2,
+                    "🟨 จำนวนแผง\n(คู่ / เศษ 1 String)", min_value=1, step=2,
                     required=True, width="small",
-                    help="ทุก String ต้องเป็นจำนวนคู่ และจำนวน String ต่างกันไม่เกิน 2 แผง",
+                    help="ปกติให้เป็นจำนวนคู่; ถ้ายอดรวมเป็นเลขคี่ อนุญาตเศษเป็นเลขคี่ได้ 1 String และต่างกันไม่เกิน 2 แผง",
                 ),
                 "string_kwp": st.column_config.NumberColumn(
                     "กำลัง DC\n(kWp)", format="%.3f",
@@ -946,7 +950,7 @@ with tab2:
     with st.container(border=True):
         st.markdown(
             "<div class='important-field-title'>⭐ ช่องสำคัญ: จำนวนแผงรวมที่มี</div>"
-            "<div class='important-field-note'>Rapid Shutdown / Optimizer อัตรา 2:1 — ต้องกรอกเป็นจำนวนคู่</div>",
+            "<div class='important-field-note'>Rapid Shutdown / Optimizer อัตรา 2:1 — ควรเป็นจำนวนคู่; ถ้าเป็นเลขคี่จะลงเศษใน 1 String และแสดง WARNING</div>",
             unsafe_allow_html=True,
         )
         total_modules = st.number_input(
@@ -960,9 +964,10 @@ with tab2:
         )
     if total_modules % 2:
         st.warning(
-            f"จำนวนแผงรวม {total_modules:,} เป็นเลขคี่ — กรุณาปรับเป็นเลขคู่ เนื่องจาก Rapid Shutdown / Optimizer ใช้อัตรา 2:1"
+            f"จำนวนแผงรวม {total_modules:,} เป็นเลขคี่ — ควรปรับเป็นเลขคู่เนื่องจาก Rapid Shutdown / Optimizer ใช้อัตรา 2:1; "
+            "หากคำนวณต่อ ระบบจะนำเศษเหลือลง 1 String และคง WARNING ไว้"
         )
-    st.caption("เกณฑ์ Engine: ทุก String เป็นเลขคู่ และจำนวนแผงระหว่าง String ต่างกันไม่เกิน 2 แผง")
+    st.caption("เกณฑ์ Engine: String ต่างกันไม่เกิน 2 แผง; ยอดรวมเลขคู่จะจัดทุก String เป็นเลขคู่, ยอดรวมเลขคี่จะมีเลขคี่ได้ 1 String")
     dc_max_values = sorted(
         pd.to_numeric(master_inverters["dc_max_v"], errors="coerce")
         .dropna()
