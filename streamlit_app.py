@@ -37,6 +37,26 @@ div[data-testid="stDataFrame"] [role="columnheader"] {
     font-size:.82rem;
     margin:.1rem 0 .5rem;
 }
+.selected-inverter-caption {
+    background:linear-gradient(90deg,#dcfce7 0%,#f0fdf4 100%);
+    border:2px solid #16a34a;
+    border-left:7px solid #15803d;
+    border-radius:.45rem;
+    color:#14532d;
+    padding:.55rem .75rem;
+    margin-top:.45rem;
+    line-height:1.35;
+}
+.selected-inverter-caption-title {
+    font-size:.8rem;
+    font-weight:800;
+    text-transform:uppercase;
+    letter-spacing:.02em;
+}
+.selected-inverter-caption-model {
+    font-size:1rem;
+    font-weight:800;
+}
 </style>""", unsafe_allow_html=True)
 
 ROOF_COLUMNS = [
@@ -452,8 +472,13 @@ with tab1:
         )
         inverter_qty_input = 1 if inverter_qty_choice == "AUTO" else int(inverter_qty_choice)
         inverter_caption = st.empty()
-        inverter_caption.caption(
-            f"{inverter['manufacturer']} | {inverter['model']} | {inverter['verification_status']}"
+        inverter_caption.markdown(
+            "<div class='selected-inverter-caption'>"
+            "<div class='selected-inverter-caption-title'>🔌 Inverter ที่ใช้ในการคำนวณ</div>"
+            f"<div class='selected-inverter-caption-model'>{inverter['manufacturer']} | {inverter['model']}</div>"
+            f"<div>สถานะข้อมูล: <b>{inverter['verification_status']}</b></div>"
+            "</div>",
+            unsafe_allow_html=True,
         )
         if inverter["verification_status"] != "Verified":
             st.error("ห้ามออกแบบ approval: รุ่นนี้ไม่มี datasheet ที่ยืนยันแล้ว")
@@ -503,8 +528,13 @@ with tab1:
                 inverter = master_inverters.loc[
                     master_inverters["inverter_id"].eq(selected_inv)
                 ].iloc[0].to_dict()
-                inverter_caption.caption(
-                    f"{inverter['manufacturer']} | {inverter['model']} | {inverter['verification_status']}"
+                inverter_caption.markdown(
+                    "<div class='selected-inverter-caption'>"
+                    "<div class='selected-inverter-caption-title'>🔌 Inverter ที่ใช้ในการคำนวณ</div>"
+                    f"<div class='selected-inverter-caption-model'>{inverter['manufacturer']} | {inverter['model']}</div>"
+                    f"<div>สถานะข้อมูล: <b>{inverter['verification_status']}</b></div>"
+                    "</div>",
+                    unsafe_allow_html=True,
                 )
             chosen_options = auto_inverter_options[
                 auto_inverter_options["inverter_id"].eq(selected_inv)
