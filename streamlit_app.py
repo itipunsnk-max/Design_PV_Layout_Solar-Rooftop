@@ -187,6 +187,19 @@ def init_state() -> None:
         st.session_state.module_master = DEFAULT_MODULES.copy()
     if "inverter_master" not in st.session_state:
         st.session_state.inverter_master = DEFAULT_INVERTERS.copy()
+    else:
+        # Refresh the former placeholder row when a browser session survives
+        # a code reload after the SG350HX-20 datasheet is added.
+        inverter_master = st.session_state.inverter_master.copy()
+        legacy_mask = inverter_master["inverter_id"].astype(str).eq("SG350HX")
+        current_ids = inverter_master["inverter_id"].astype(str).tolist()
+        if legacy_mask.any() and "SG350HX-20" not in current_ids:
+            replacement = DEFAULT_INVERTERS.loc[
+                DEFAULT_INVERTERS["inverter_id"].eq("SG350HX-20")
+            ].iloc[0].to_dict()
+            for column, value in replacement.items():
+                inverter_master.loc[legacy_mask, column] = value
+            st.session_state.inverter_master = inverter_master
     if "roof_groups" not in st.session_state:
         st.session_state.roof_groups = default_roof_groups()
     else:
@@ -551,7 +564,11 @@ for warning in design.get("input_warnings", []):
 
 with tab2:
     st.subheader("แนะนำการจัด String จากจำนวนแผงรวม")
-    total_modules = st.number_input("จำนวนแผงรวมที่มี", 1, 100000, int(pd.to_numeric(st.session_state.roof_groups.modules, errors="coerce").fillna(0).sum()), 1)
+    total_modules = st.number_input("จำนวนแผงรวมที่มี (Rapid Shutdown / Optimizer 2:1 — ให้เป็นจำนวนคู่)", 1, 100000, int(pd.to_numeric(st.session_state.roof_groups.modules, errors="coerce").fillna(0).sum()), 2)
+    if total_modules % 2:
+        st.warning(
+            f"จำนวนแผงรวม {total_modules:,} เป็นเลขคี่ — กรุณาปรับเป็นเลขคู่ เนื่องจาก Rapid Shutdown / Optimizer ใช้อัตรา 2:1"
+        )
     if design.get("critical_missing"):
         st.error("ต้องกรอก datasheet inverter ให้ครบก่อนสร้างคำแนะนำ")
     else:

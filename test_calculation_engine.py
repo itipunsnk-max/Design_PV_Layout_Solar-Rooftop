@@ -66,6 +66,20 @@ def test_default_module_is_725_w_with_datasheet_values():
     assert module["module_efficiency_pct"] == 23.35
 
 
+def test_sg350hx_20_matches_v6_datasheet():
+    inverter = DEFAULT_INVERTERS.query("inverter_id == 'SG350HX-20'").iloc[0]
+    assert inverter["dc_max_v"] == 1500
+    assert inverter["startup_v"] == 550
+    assert inverter["mppt_min_v"] == 500
+    assert inverter["mppt_max_v"] == 1500
+    assert inverter["mppt_qty"] == 6
+    assert inverter["inputs_per_mppt"] == 5
+    assert inverter["max_i_mppt_a"] == 75
+    assert inverter["max_isc_mppt_a"] == 125
+    assert inverter["rated_ac_kw"] == 320
+    assert inverter["verification_status"] == "Verified"
+
+
 def test_design_is_balanced_and_exported_by_inverter_set():
     module = DEFAULT_MODULES.iloc[0].to_dict()
     inverter = DEFAULT_INVERTERS.query("inverter_id == 'SG125CX-P2'").iloc[0].to_dict()
