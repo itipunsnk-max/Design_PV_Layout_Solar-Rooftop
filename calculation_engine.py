@@ -31,21 +31,63 @@ def _status(*conditions: bool) -> str:
     return "PASS" if all(conditions) else "FAIL"
 
 
+STRING_MODULE_STEP = 2
+MAX_STRING_MODULE_DIFFERENCE = 2
+
+
+def _balanced_string_sizes(
+    total_modules: int,
+    string_count: int,
+    nmin: int,
+    nmax: int,
+) -> list[int] | None:
+    """Return even string sizes whose spread is at most two modules."""
+    if total_modules % STRING_MODULE_STEP:
+        return None
+    first_even = math.ceil(nmin / STRING_MODULE_STEP) * STRING_MODULE_STEP
+    last_even = math.floor(nmax / STRING_MODULE_STEP) * STRING_MODULE_STEP
+    if first_even > last_even or string_count <= 0:
+        return None
+    for low in range(first_even, last_even + 1, STRING_MODULE_STEP):
+        remainder = total_modules - low * string_count
+        if remainder < 0 or remainder % STRING_MODULE_STEP:
+            continue
+        higher_count = remainder // STRING_MODULE_STEP
+        if higher_count > string_count:
+            continue
+        high = low + STRING_MODULE_STEP
+        if higher_count and high > last_even:
+            continue
+        sizes = [high] * higher_count + [low] * (string_count - higher_count)
+        if sizes and max(sizes) - min(sizes) <= MAX_STRING_MODULE_DIFFERENCE:
+            return sizes
+    return None
+
+
 def recommend_string_groups(total_modules: int, limits: dict[str, Any], module_power_w: float = 0) -> pd.DataFrame:
-    """Split a supplied module count into electrically feasible, near-equal strings."""
-    if total_modules <= 0 or not limits:
-        return pd.DataFrame(columns=["string_id", "modules", "string_kwp", "recommendation"])
-    nmin, nmax = limits["nmin_mppt"], limits["nmax_design"]
+    """Split modules into even, near-equal strings suitable for 2:1 devices."""
+    columns = ["string_id", "modules", "string_kwp", "recommendation"]
+    if total_modules <= 0 or not limits or total_modules % STRING_MODULE_STEP:
+        return pd.DataFrame(columns=columns)
+    nmin, nmax = int(limits["nmin_mppt"]), int(limits["nmax_design"])
+    if nmin > nmax:
+        return pd.DataFrame(columns=columns)
     string_count = max(1, math.ceil(total_modules / nmax))
-    while string_count <= total_modules:
-        base, remainder = divmod(total_modules, string_count)
-        sizes = [base + 1] * remainder + [base] * (string_count - remainder)
-        if min(sizes) >= nmin and max(sizes) <= nmax:
-            return pd.DataFrame({"string_id": [f"AUTO-S{i+1:02d}" for i in range(string_count)], "modules": sizes,
-                                 "string_kwp": [size * module_power_w / 1000 for size in sizes],
-                                 "recommendation": ["นำไปจัด MPPT ต่อ" for _ in sizes]})
+    max_string_count = max(string_count, total_modules // max(1, nmin))
+    while string_count <= max_string_count:
+        sizes = _balanced_string_sizes(total_modules, string_count, nmin, nmax)
+        if sizes is not None:
+            return pd.DataFrame({
+                "string_id": [f"AUTO-S{i+1:02d}" for i in range(string_count)],
+                "modules": sizes,
+                "string_kwp": [size * module_power_w / 1000 for size in sizes],
+                "recommendation": [
+                    "นำไปจัด MPPT ต่อ (จำนวนคู่; ต่างกันไม่เกิน 2 แผง)"
+                    for _ in sizes
+                ],
+            })
         string_count += 1
-    return pd.DataFrame([["", total_modules, total_modules * module_power_w / 1000, "ไม่สามารถจัดเป็น string ที่ผ่านเกณฑ์ได้" ]], columns=["string_id", "modules", "string_kwp", "recommendation"])
+    return pd.DataFrame(columns=columns)
 
 
 def inverter_optimisation(total_dc_kwp: float, max_dcac: float, inverter_master: pd.DataFrame) -> pd.DataFrame:
@@ -67,6 +109,137 @@ def inverter_optimisation(total_dc_kwp: float, max_dcac: float, inverter_master:
             status, comment = "PASS", "อยู่ในเกณฑ์ DC/AC ที่ตั้งไว้; ต้องตรวจ MPPT และ AC system ต่อ"
         rows.append({"inverter_id": inv["inverter_id"], "recommended_qty": quantity, "dc_ac_ratio": ratio,
                      "status": status, "comment": comment})
+    return pd.DataFrame(rows)
+
+
+def recommend_inverter_options(
+    *,
+    module: dict[str, Any],
+    module_power_w: float,
+    tmin_c: float,
+    tcell_max_c: float,
+    safety_factor: float,
+    max_dcac: float,
+    cable_material: str,
+    cable_size_mm2: float,
+    max_voltage_drop: float,
+    max_dc_loss: float,
+    strings: pd.DataFrame,
+    inverter_master: pd.DataFrame,
+    max_quantity: int = 50,
+) -> pd.DataFrame:
+    """Find the least physical inverter quantity that passes MPPT allocation."""
+    rows = []
+    numeric_modules = pd.to_numeric(
+        strings["modules"] if "modules" in strings.columns else pd.Series(dtype=float),
+        errors="coerce",
+    )
+    total_dc_kwp = float(numeric_modules.fillna(0).sum()) * module_power_w / 1000
+    valid_modules = numeric_modules.dropna()
+    invalid_string_criteria = (
+        not valid_modules.empty
+        and (
+            (valid_modules % STRING_MODULE_STEP != 0).any()
+            or int(valid_modules.max() - valid_modules.min()) > MAX_STRING_MODULE_DIFFERENCE
+        )
+    )
+    for _, inverter_row in inverter_master.iterrows():
+        inverter = inverter_row.to_dict()
+        ac_kw = pd.to_numeric(inverter.get("rated_ac_kw"), errors="coerce")
+        if pd.isna(ac_kw) or ac_kw <= 0:
+            rows.append({
+                "inverter_id": inverter.get("inverter_id"),
+                "inverter_model": inverter.get("model"),
+                "recommended_qty": None,
+                "dc_ac_ratio": None,
+                "assigned_strings": 0,
+                "unassigned_strings": None,
+                "used_mppt": 0,
+                "total_mppt": None,
+                "status": "REQUIRES VERIFICATION",
+                "comment": "ไม่มี Rated AC kW ที่ยืนยันแล้ว",
+            })
+            continue
+        if invalid_string_criteria:
+            rows.append({
+                "inverter_id": inverter.get("inverter_id"),
+                "inverter_model": inverter.get("model"),
+                "recommended_qty": None,
+                "dc_ac_ratio": None,
+                "assigned_strings": int(len(valid_modules)),
+                "unassigned_strings": 0,
+                "used_mppt": 0,
+                "total_mppt": int(inverter["mppt_qty"]) * int(inverter["inputs_per_mppt"]),
+                "status": "FAIL",
+                "comment": "ต้องแก้จำนวนแผงให้เป็นเลขคู่ และต่างกันไม่เกิน 2 แผงก่อนเลือก AUTO",
+            })
+            continue
+
+        minimum_dc_qty = max(1, math.ceil(total_dc_kwp / (float(ac_kw) * max_dcac)))
+        best = None
+        last_design = None
+        for quantity in range(minimum_dc_qty, max_quantity + 1):
+            last_design = calculate_design(
+                module=module,
+                inverter=inverter,
+                module_power_w=module_power_w,
+                tmin_c=tmin_c,
+                tcell_max_c=tcell_max_c,
+                safety_factor=safety_factor,
+                inverter_qty=quantity,
+                max_dcac=max_dcac,
+                cable_material=cable_material,
+                cable_size_mm2=cable_size_mm2,
+                max_voltage_drop=max_voltage_drop,
+                max_dc_loss=max_dc_loss,
+                strings=strings,
+            )
+            string_pass = (
+                not last_design["strings"].empty
+                and (last_design["strings"]["electrical_status"] == "PASS").all()
+            )
+            assignment_pass = (
+                not last_design["assignments"].empty
+                and (last_design["assignments"]["assignment_status"] == "PASS").all()
+            )
+            ratio = last_design.get("actual_dcac_ratio")
+            ratio_pass = ratio is not None and ratio <= max_dcac
+            if string_pass and assignment_pass and ratio_pass:
+                best = last_design
+                break
+
+        if best is None:
+            assignments = last_design.get("assignments", pd.DataFrame()) if last_design else pd.DataFrame()
+            assigned = int((assignments.get("assignment_status") == "PASS").sum()) if not assignments.empty else 0
+            unassigned = int((assignments.get("assignment_status") != "PASS").sum()) if not assignments.empty else None
+            warnings = (last_design or {}).get("input_warnings", [])
+            rows.append({
+                "inverter_id": inverter.get("inverter_id"),
+                "inverter_model": inverter.get("model"),
+                "recommended_qty": None,
+                "dc_ac_ratio": (last_design or {}).get("actual_dcac_ratio"),
+                "assigned_strings": assigned,
+                "unassigned_strings": unassigned,
+                "used_mppt": int(assignments["mppt_no"].nunique()) if not assignments.empty else 0,
+                "total_mppt": int(inverter["mppt_qty"]) * int(inverter["inputs_per_mppt"]),
+                "status": "FAIL",
+                "comment": "; ".join(warnings) or "ไม่สามารถจัด String ลง MPPT ได้ครบตามเกณฑ์",
+            })
+            continue
+
+        assignments = best["assignments"]
+        rows.append({
+            "inverter_id": inverter.get("inverter_id"),
+            "inverter_model": inverter.get("model"),
+            "recommended_qty": quantity,
+            "dc_ac_ratio": best.get("actual_dcac_ratio"),
+            "assigned_strings": int(len(assignments)),
+            "unassigned_strings": 0,
+            "used_mppt": int(assignments["mppt_no"].nunique()),
+            "total_mppt": int(inverter["mppt_qty"]) * int(quantity),
+            "status": "PASS",
+            "comment": "ผ่านเกณฑ์จำนวน String คู่, เกลี่ยต่างกันไม่เกิน 2 แผง และจัด MPPT ได้ครบ",
+        })
     return pd.DataFrame(rows)
 
 
@@ -93,24 +266,78 @@ def calculate_design(*, module: dict[str, Any], inverter: dict[str, Any], module
     # back to the exact candidate row, even when an incomplete row is in-between.
     working.insert(0, "source_row", range(len(working)))
     working["modules"] = pd.to_numeric(working["modules"], errors="coerce")
-    invalid_modules = working[working["modules"].isna() | (working["modules"] <= 0)]
-    working = working[working["modules"].notna() & (working["modules"] > 0)].copy()
+    invalid_modules = working[
+        working["modules"].isna()
+        | (working["modules"] <= 0)
+        | (working["modules"].notna() & (working["modules"] % 1 != 0))
+    ]
+    working = working[
+        working["modules"].notna()
+        & (working["modules"] > 0)
+        & (working["modules"] % 1 == 0)
+    ].copy()
+    working["modules"] = working["modules"].astype(int)
     input_warnings = []
     if not invalid_modules.empty:
         input_warnings.append(f"ข้าม {len(invalid_modules)} แถวที่ไม่มีจำนวนแผงหรือจำนวนแผงไม่ถูกต้อง")
+    string_constraints = {
+        "required_even": True,
+        "max_difference": MAX_STRING_MODULE_DIFFERENCE,
+        "is_even_and_balanced": True,
+        "min_modules": None,
+        "max_modules": None,
+        "difference": 0,
+    }
     if working.empty:
         return {"limits": limits, "strings": pd.DataFrame(), "assignments": pd.DataFrame(),
                 "inverter_summary": _summarize_inverters(
                     pd.DataFrame(), inverter, inverter_qty, max_dcac
                 ), "cables": pd.DataFrame(), "critical_missing": False,
-                "max_dcac": max_dcac, "input_warnings": input_warnings}
+                "max_dcac": max_dcac, "input_warnings": input_warnings,
+                "string_constraints": string_constraints}
+
+    module_counts = working["modules"].astype(int)
+    odd_strings = working[module_counts % STRING_MODULE_STEP != 0]
+    min_modules = int(module_counts.min())
+    max_modules = int(module_counts.max())
+    module_difference = max_modules - min_modules
+    balanced_strings = module_difference <= MAX_STRING_MODULE_DIFFERENCE
+    string_constraints.update({
+        "is_even_and_balanced": odd_strings.empty and balanced_strings,
+        "min_modules": min_modules,
+        "max_modules": max_modules,
+        "difference": module_difference,
+    })
+    if not odd_strings.empty:
+        input_warnings.append(
+            "จำนวนแผงต่อ String ต้องเป็นเลขคู่เพื่อรองรับ Rapid Shutdown / Optimizer 2:1"
+        )
+    if not balanced_strings:
+        input_warnings.append(
+            f"จำนวนแผงต่อ String ต่างกัน {module_difference} แผง เกินเกณฑ์ไม่เกิน {MAX_STRING_MODULE_DIFFERENCE} แผง"
+        )
 
     rows = []
     for i, r in working.reset_index(drop=True).iterrows():
         n = int(r["modules"])
         v_cold, v_hot, v_stc = n * voc_cold, n * vmp_hot, n * float(module["vmp_v"])
-        status = _status(n >= limits["nmin_mppt"], n <= limits["nmax_design"], v_hot >= inverter["startup_v"], v_hot >= inverter["mppt_min_v"], v_hot <= inverter["mppt_max_v"], v_cold <= inverter["dc_max_v"], float(module["imp_a"]) <= inverter["max_i_input_a"])
-        comment = "ผ่านช่วงแรงดันและกระแส" if status == "PASS" else "ปรับจำนวนแผง/String หรือเลือกรุ่น inverter ที่มีช่วงแรงดัน/กระแสเหมาะสม"
+        status = _status(
+            n % STRING_MODULE_STEP == 0,
+            balanced_strings,
+            n >= limits["nmin_mppt"],
+            n <= limits["nmax_design"],
+            v_hot >= inverter["startup_v"],
+            v_hot >= inverter["mppt_min_v"],
+            v_hot <= inverter["mppt_max_v"],
+            v_cold <= inverter["dc_max_v"],
+            float(module["imp_a"]) <= inverter["max_i_input_a"],
+        )
+        if n % STRING_MODULE_STEP:
+            comment = "จำนวนแผงต้องเป็นเลขคู่สำหรับ Rapid Shutdown / Optimizer 2:1"
+        elif not balanced_strings:
+            comment = f"จำนวนแผงในกลุ่มต่างกันเกิน {MAX_STRING_MODULE_DIFFERENCE} แผง"
+        else:
+            comment = "ผ่านช่วงแรงดัน กระแส และเกณฑ์ String คู่/เกลี่ยแผง"
         rows.append({"string_id":f"S{i+1:02d}", **r.to_dict(), "string_kwp":n*module_power_w/1000,
                      "voc_cold_v":v_cold,"vmp_hot_v":v_hot,"vmp_stc_v":v_stc,"imp_a":module["imp_a"],"isc_a":module["isc_a"],"electrical_status":status,"comment":comment})
     out = pd.DataFrame(rows)
@@ -122,6 +349,7 @@ def calculate_design(*, module: dict[str, Any], inverter: dict[str, Any], module
     return {"limits": limits, "strings": out, "assignments": assignments,
             "inverter_summary": inverter_summary, "cables": cables,
             "critical_missing": False, "max_dcac": max_dcac, "input_warnings": input_warnings,
+            "string_constraints": string_constraints,
             "total_dc_kwp": total_dc_kwp, "total_ac_kw": total_ac_kw,
             "actual_dcac_ratio": total_dc_kwp / total_ac_kw if total_ac_kw else None}
 
@@ -179,7 +407,8 @@ def _assign_mppt(strings: pd.DataFrame, inverter: dict[str, Any], inverter_qty: 
         slot = min(
             candidate_slots,
             key=lambda x: (
-                len(x["items"]),
+                0 if x["items"] else 1,
+                -len(x["items"]),
                 x["inverter_id"],
                 x["mppt_no"],
             ),
@@ -202,7 +431,22 @@ def _assign_mppt(strings: pd.DataFrame, inverter: dict[str, Any], inverter_qty: 
                          "mppt_no":slot["mppt_no"],"input_no":len(slot["items"]),
                          "assignment_status":"PASS",
                          "comment":"เลือก Inverter โดยผู้ใช้และจัด MPPT สำเร็จ" if manual_assignment else "จัดบน MPPT ที่มีจำนวนแผง/ทิศ/เงาเดียวกัน"})
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    out["mppt_modules_per_string"] = pd.NA
+    out["mppt_string_count"] = pd.NA
+    out["mppt_total_modules"] = pd.NA
+    passed = out[out["assignment_status"] == "PASS"]
+    for (inverter_id, mppt_no), group in passed.groupby(
+        ["inverter_id", "mppt_no"], sort=False
+    ):
+        modules = pd.to_numeric(group["modules"], errors="coerce").astype(int)
+        # The slot matcher above only permits equal-length strings per MPPT.
+        out.loc[group.index, "mppt_modules_per_string"] = int(modules.iloc[0])
+        out.loc[group.index, "mppt_string_count"] = int(len(group))
+        out.loc[group.index, "mppt_total_modules"] = int(modules.sum())
+    return out
 
 
 def _summarize_inverters(assignments: pd.DataFrame, inverter: dict[str, Any],
@@ -313,13 +557,17 @@ def qa_summary(design: dict[str, Any], module: dict[str, Any], inverter: dict[st
     if design.get("critical_missing"):
         return pd.DataFrame([["QA-00","Critical inverter fields missing","Critical","FAIL","Inverter Master","Load and verify the manufacturer datasheet","No"]], columns=["check_id","description","severity","result","affected_item","action","override"])
     strings, assignments, cables = design["strings"], design["assignments"], design["cables"]
+    string_criteria_pass = design.get("string_constraints", {}).get(
+        "is_even_and_balanced", False
+    )
     rows = [
         ["QA-01","Module suffix provided","Critical","PASS" if suffix.strip() else "FAIL","Module","Enter verified full suffix","No"],
         ["QA-02","Equipment revision verified","Critical","PASS" if module["verification_status"] == "Verified" and inverter["verification_status"] == "Verified" else "FAIL","Master data","Verify datasheet revision / market","No"],
-        ["QA-03","All candidate strings voltage valid","Critical","PASS" if (strings.electrical_status == "PASS").all() else "FAIL","String Designer","Review string length / voltage window","No"],
-        ["QA-04","All strings assigned to compatible MPPT","Critical","PASS" if (assignments.assignment_status == "PASS").all() else "FAIL","MPPT Assignment","Add inverter/MPPT or revise groups","No"],
-        ["QA-05","DC cable voltage drop and loss","Warning","PASS" if (cables.cable_status == "PASS").all() else "WARNING","DC Cable","Increase cable size or reduce route length","No"],
-        ["QA-06","PAN and OND files supplied","Warning","PASS" if module["pan_file"] != "REQUIRES VERIFICATION" and inverter["ond_file"] != "REQUIRES VERIFICATION" else "WARNING","PVsyst","Add verified PAN / OND files","No"],
+        ["QA-03","String module count is even and balanced","Critical","PASS" if string_criteria_pass else "FAIL","String Designer","Use Auto-layout or make every String even and within 2 modules","No"],
+        ["QA-04","All candidate strings voltage valid","Critical","PASS" if (strings.electrical_status == "PASS").all() else "FAIL","String Designer","Review string length / voltage window","No"],
+        ["QA-05","All strings assigned to compatible MPPT","Critical","PASS" if (assignments.assignment_status == "PASS").all() else "FAIL","MPPT Assignment","Add inverter/MPPT or revise groups","No"],
+        ["QA-06","DC cable voltage drop and loss","Warning","PASS" if (cables.cable_status == "PASS").all() else "WARNING","DC Cable","Increase cable size or reduce route length","No"],
+        ["QA-07","PAN and OND files supplied","Warning","PASS" if module["pan_file"] != "REQUIRES VERIFICATION" and inverter["ond_file"] != "REQUIRES VERIFICATION" else "WARNING","PVsyst","Add verified PAN / OND files","No"],
     ]
     return pd.DataFrame(rows, columns=["check_id","description","severity","result","affected_item","action","override"])
 

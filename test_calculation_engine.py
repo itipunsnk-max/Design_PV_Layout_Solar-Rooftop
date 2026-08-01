@@ -2,6 +2,7 @@ import pandas as pd
 
 from calculation_engine import (
     DEFAULT_INVERTERS, DEFAULT_MODULES, calculate_design, make_pvsyst_export,
+    recommend_inverter_options, recommend_string_groups,
 )
 
 
@@ -78,6 +79,60 @@ def test_sg350hx_20_matches_v6_datasheet():
     assert inverter["max_isc_mppt_a"] == 125
     assert inverter["rated_ac_kw"] == 320
     assert inverter["verification_status"] == "Verified"
+
+
+def test_auto_layout_is_even_and_balanced_and_rejects_odd_total():
+    groups = recommend_string_groups(
+        444, {"nmin_mppt": 15, "nmax_design": 20}, module_power_w=725
+    )
+    assert not groups.empty
+    assert int(groups["modules"].sum()) == 444
+    assert (groups["modules"] % 2 == 0).all()
+    assert int(groups["modules"].max() - groups["modules"].min()) <= 2
+    assert recommend_string_groups(
+        445, {"nmin_mppt": 15, "nmax_design": 20}, module_power_w=725
+    ).empty
+
+
+def test_auto_inverter_uses_minimum_quantity_and_keeps_mppt_strings_equal():
+    module = DEFAULT_MODULES.iloc[0].to_dict()
+    groups = recommend_string_groups(
+        444, {"nmin_mppt": 15, "nmax_design": 20}, module_power_w=725
+    )
+    raw = pd.DataFrame(
+        [
+            ["RF01", "Upper", f"G{i+1:02d}", int(row.modules), "AUTO",
+             "Portrait", 10, 180, "Low", 35 + i]
+            for i, (_, row) in enumerate(groups.iterrows())
+        ],
+        columns=["roof_id", "zone", "group_id", "modules", "inverter_override",
+                 "orientation", "tilt_deg", "azimuth_deg", "shading", "one_way_m"],
+    )
+    options = recommend_inverter_options(
+        module=module, module_power_w=725, tmin_c=10, tcell_max_c=70,
+        safety_factor=0.95, max_dcac=1.4, cable_material="Copper",
+        cable_size_mm2=6, max_voltage_drop=0.015, max_dc_loss=0.015,
+        strings=raw, inverter_master=DEFAULT_INVERTERS,
+    )
+    passing = options[options["status"] == "PASS"].sort_values(
+        ["recommended_qty", "inverter_id"]
+    )
+    assert passing.iloc[0]["inverter_id"] == "SG350HX-20"
+    assert passing.iloc[0]["recommended_qty"] == 1
+
+    inverter = DEFAULT_INVERTERS.query("inverter_id == 'SG350HX-20'").iloc[0].to_dict()
+    result = calculate_design(
+        module=module, inverter=inverter, module_power_w=725, tmin_c=10,
+        tcell_max_c=70, safety_factor=0.95, inverter_qty=1, max_dcac=1.4,
+        cable_material="Copper", cable_size_mm2=6, max_voltage_drop=0.015,
+        max_dc_loss=0.015, strings=raw,
+    )
+    assigned = result["assignments"]
+    assert assigned["assignment_status"].eq("PASS").all()
+    assert all(
+        group["modules"].nunique() == 1
+        for _, group in assigned.groupby(["inverter_id", "mppt_no"])
+    )
 
 
 def test_design_is_balanced_and_exported_by_inverter_set():

@@ -9,7 +9,8 @@ import streamlit as st
 
 from calculation_engine import (
     DEFAULT_INVERTERS, DEFAULT_MODULES, calculate_design, csv_bytes,
-    inverter_optimisation, make_pvsyst_export, qa_summary, recommend_string_groups,
+    inverter_optimisation, make_pvsyst_export, qa_summary, recommend_inverter_options,
+    recommend_string_groups,
 )
 
 st.set_page_config(page_title="Solar Rooftop Design Assistant", page_icon="☀️", layout="wide")
@@ -63,9 +64,9 @@ def default_roof_groups() -> pd.DataFrame:
         ["RF01", "Upper", "G01", 18, "AUTO", "Portrait", 10, 180, "Low", 35],
         ["RF01", "Upper", "G02", 18, "AUTO", "Portrait", 10, 180, "Low", 40],
         ["RF01", "Upper", "G03", 18, "AUTO", "Portrait", 10, 180, "Low", 45],
-        ["RF02", "Lower", "G04", 14, "AUTO", "Portrait", 10, 180, "Low", 55],
-        ["RF02", "Lower", "G05", 17, "AUTO", "Portrait", 10, 180, "Low", 60],
-        ["RF02", "Lower", "G06", 17, "AUTO", "Portrait", 10, 180, "Low", 65],
+        ["RF02", "Lower", "G04", 16, "AUTO", "Portrait", 10, 180, "Low", 55],
+        ["RF02", "Lower", "G05", 16, "AUTO", "Portrait", 10, 180, "Low", 60],
+        ["RF02", "Lower", "G06", 16, "AUTO", "Portrait", 10, 180, "Low", 65],
     ], columns=ROOF_COLUMNS)
 
 
@@ -262,10 +263,31 @@ with tab1:
         )
     with col2:
         st.subheader("Inverter")
-        selected_inv = st.selectbox("รุ่น Inverter", master_inverters["inverter_id"].tolist(), index=min(3, len(master_inverters)-1))
+        inverter_select_options = ["AUTO", *master_inverters["inverter_id"].tolist()]
+        selected_inv_choice = st.selectbox(
+            "รุ่น Inverter",
+            inverter_select_options,
+            index=0,
+            help="AUTO = เลือกรุ่นที่ใช้จำนวน Inverter น้อยที่สุดและจัด String/MPPT ให้ครบ",
+        )
+        selected_inv = (
+            selected_inv_choice
+            if selected_inv_choice != "AUTO"
+            else str(master_inverters.iloc[0]["inverter_id"])
+        )
         inverter = master_inverters.loc[master_inverters.inverter_id == selected_inv].iloc[0].to_dict()
-        inverter_qty_input = st.number_input("จำนวน Inverter ที่ต้องการใช้", 1, 50, 1, 1)
-        st.caption(f"{inverter['manufacturer']} | {inverter['model']} | {inverter['verification_status']}")
+        inverter_qty_options = ["AUTO", *range(1, 51)]
+        inverter_qty_choice = st.selectbox(
+            "จำนวน Inverter ที่ต้องการใช้",
+            inverter_qty_options,
+            index=0,
+            format_func=lambda value: "AUTO (จำนวนน้อยที่สุดที่รองรับ)" if value == "AUTO" else str(value),
+        )
+        inverter_qty_input = 1 if inverter_qty_choice == "AUTO" else int(inverter_qty_choice)
+        inverter_caption = st.empty()
+        inverter_caption.caption(
+            f"{inverter['manufacturer']} | {inverter['model']} | {inverter['verification_status']}"
+        )
         if inverter["verification_status"] != "Verified":
             st.error("ห้ามออกแบบ approval: รุ่นนี้ไม่มี datasheet ที่ยืนยันแล้ว")
 
@@ -285,8 +307,65 @@ with tab1:
         max_voltage_drop = st.number_input("Voltage drop สูงสุด (%)", 0.1, 10.0, 1.5, 0.1) / 100
         max_dc_loss = st.number_input("DC loss สูงสุด (%)", 0.1, 10.0, 1.5, 0.1) / 100
 
+    auto_inverter_options = pd.DataFrame()
+    if selected_inv_choice == "AUTO" or inverter_qty_choice == "AUTO":
+        auto_inverter_options = recommend_inverter_options(
+            module=module,
+            module_power_w=module_power,
+            tmin_c=tmin,
+            tcell_max_c=tcell_max,
+            safety_factor=safety_factor,
+            max_dcac=max_dcac,
+            cable_material=cable_material,
+            cable_size_mm2=cable_size,
+            max_voltage_drop=max_voltage_drop,
+            max_dc_loss=max_dc_loss,
+            strings=st.session_state.roof_groups,
+            inverter_master=master_inverters,
+        )
+        passing_options = auto_inverter_options[
+            auto_inverter_options["status"] == "PASS"
+        ].copy()
+        if not passing_options.empty:
+            best_option = passing_options.sort_values(
+                ["recommended_qty", "dc_ac_ratio", "inverter_id"],
+                na_position="last",
+            ).iloc[0]
+            if selected_inv_choice == "AUTO":
+                selected_inv = str(best_option["inverter_id"])
+                inverter = master_inverters.loc[
+                    master_inverters["inverter_id"].eq(selected_inv)
+                ].iloc[0].to_dict()
+                inverter_caption.caption(
+                    f"{inverter['manufacturer']} | {inverter['model']} | {inverter['verification_status']}"
+                )
+            chosen_options = auto_inverter_options[
+                auto_inverter_options["inverter_id"].eq(selected_inv)
+                & (auto_inverter_options["status"] == "PASS")
+            ]
+            if chosen_options.empty:
+                st.error(
+                    f"รุ่น {inverter['model']} ยังจัด String/MPPT ตามเกณฑ์ไม่ได้ "
+                    "กรุณาเลือก Inverter เป็น AUTO หรือแก้จำนวน String"
+                )
+            else:
+                if inverter_qty_choice == "AUTO":
+                    inverter_qty_input = int(chosen_options.iloc[0]["recommended_qty"])
+                st.success(
+                    f"AUTO แนะนำ {inverter['model']} จำนวน {inverter_qty_input} เครื่อง "
+                    f"(เลือกจำนวน Inverter ต่ำสุดที่จัด String/MPPT ได้ครบ)"
+                )
+        else:
+            st.error(
+                "AUTO ยังหาแผนที่ผ่านไม่ได้ — ตรวจให้ทุก String เป็นเลขคู่ "
+                "และจำนวนแผงแต่ละ String ต่างกันไม่เกิน 2 แผง"
+            )
+        if selected_inv_choice == "AUTO":
+            st.caption("ตารางเปรียบเทียบ AUTO: เลือกแถว PASS ที่มีจำนวน Inverter น้อยที่สุด")
+            display(auto_inverter_options, ["status"])
+
     st.subheader("Roof layout / Candidate strings")
-    st.markdown("<div style='background:#fff2cc;border-left:5px solid #d6b656;padding:10px;border-radius:4px'>🟨 <b>ช่องที่ต้องกรอก:</b> Roof ID, Zone, Group ID, จำนวนแผง, Orientation, Tilt, Azimuth และ Shading. คอลัมน์ <b>เลือก Inverter</b> ใช้ AUTO หรือระบุ INVxx ราย String ได้ • หลัง copy/paste จาก Excel ให้กด <b>บันทึกข้อมูลและคำนวณใหม่</b> • One-way cable เว้นว่างเพื่อกรอกภายหลังได้</div>", unsafe_allow_html=True)
+    st.markdown("<div style='background:#fff2cc;border-left:5px solid #d6b656;padding:10px;border-radius:4px'>🟨 <b>ช่องที่ต้องกรอก:</b> Roof ID, Zone, Group ID, จำนวนแผง, Orientation, Tilt, Azimuth และ Shading. จำนวนแผงต่อ String ต้องเป็นเลขคู่ และ String ต่างกันไม่เกิน 2 แผง. คอลัมน์ <b>เลือก Inverter</b> ใช้ AUTO หรือระบุ INVxx ราย String ได้ • หลัง copy/paste จาก Excel ให้กด <b>บันทึกข้อมูลและคำนวณใหม่</b> • One-way cable เว้นว่างเพื่อกรอกภายหลังได้</div>", unsafe_allow_html=True)
     st.caption("กรอกจาก drone, DWG หรือ survey • one-way cable คือระยะจริงขาเดียว • กด Submit ก่อนเปลี่ยนรุ่น/จำนวน Inverter")
     if st.session_state.pop("roof_saved_notice", False):
         st.success("บันทึกข้อมูลตารางแล้ว และคำนวณ kWp / Inverter Set ใหม่เรียบร้อย")
@@ -370,13 +449,19 @@ with tab1:
         * module_power / 1000,
     )
     inverter_by_row = {}
+    mppt_by_row = {}
+    input_by_row = {}
+    mppt_total_modules_by_row = {}
     if not candidate_preview_design["assignments"].empty:
-        inverter_by_row = (
-            candidate_preview_design["assignments"]
-            .drop_duplicates("source_row")
-            .set_index("source_row")["inverter_id"]
-            .to_dict()
-        )
+        assignment_lookup = candidate_preview_design["assignments"].drop_duplicates(
+            "source_row"
+        ).set_index("source_row")
+        inverter_by_row = assignment_lookup["inverter_id"].to_dict()
+        mppt_by_row = assignment_lookup["mppt_no"].to_dict()
+        input_by_row = assignment_lookup["input_no"].to_dict()
+        mppt_total_modules_by_row = assignment_lookup[
+            "mppt_total_modules"
+        ].to_dict()
     invalid_overrides = ~candidate_editor_frame["inverter_override"].astype(str).isin(
         inverter_options
     )
@@ -390,6 +475,24 @@ with tab1:
         candidate_editor_frame.columns.get_loc("inverter_override") + 1,
         "inverter_id",
         [inverter_by_row.get(row_no, "-") for row_no in candidate_editor_frame.index],
+    )
+    candidate_editor_frame.insert(
+        candidate_editor_frame.columns.get_loc("inverter_id") + 1,
+        "mppt_no",
+        [mppt_by_row.get(row_no, pd.NA) for row_no in candidate_editor_frame.index],
+    )
+    candidate_editor_frame.insert(
+        candidate_editor_frame.columns.get_loc("mppt_no") + 1,
+        "input_no",
+        [input_by_row.get(row_no, pd.NA) for row_no in candidate_editor_frame.index],
+    )
+    candidate_editor_frame.insert(
+        candidate_editor_frame.columns.get_loc("input_no") + 1,
+        "mppt_total_modules",
+        [
+            mppt_total_modules_by_row.get(row_no, pd.NA)
+            for row_no in candidate_editor_frame.index
+        ],
     )
 
     total_candidate_modules = int(
@@ -453,7 +556,7 @@ with tab1:
         # Assigned Inverter is rendered in the read-only result table below;
         # placing it inside this grid would shift pasted Excel cells.
         candidate_input_frame = candidate_editor_frame.drop(
-            columns=["inverter_id"]
+            columns=["inverter_id", "mppt_no", "input_no", "mppt_total_modules"]
         )
         candidate_editor_styler = candidate_input_frame.style.map(
             inverter_cell_style,
@@ -473,8 +576,9 @@ with tab1:
                     "🟨 Group ID *", required=True, width="small"
                 ),
                 "modules": st.column_config.NumberColumn(
-                    "🟨 จำนวนแผง\n(แผง)", min_value=1, step=1,
-                    required=True, width="small"
+                    "🟨 จำนวนแผง\n(แผงคู่)", min_value=1, step=2,
+                    required=True, width="small",
+                    help="ทุก String ต้องเป็นจำนวนคู่ และจำนวน String ต่างกันไม่เกิน 2 แผง",
                 ),
                 "string_kwp": st.column_config.NumberColumn(
                     "กำลัง DC\n(kWp)", format="%.3f",
@@ -527,7 +631,8 @@ with tab1:
     st.markdown("**ผลการจัด Inverter ราย String**")
     assignment_preview = candidate_editor_frame[[
         "roof_id", "group_id", "modules", "string_kwp",
-        "inverter_override", "inverter_id",
+        "inverter_override", "inverter_id", "mppt_no", "input_no",
+        "mppt_total_modules",
     ]].rename(columns={
         "roof_id": "Roof ID",
         "group_id": "Group ID",
@@ -535,6 +640,9 @@ with tab1:
         "string_kwp": "DC (kWp)",
         "inverter_override": "เลือก Inverter",
         "inverter_id": "Assigned Inverter",
+        "mppt_no": "MPPT",
+        "input_no": "Input",
+        "mppt_total_modules": "MPPT total modules",
     })
     assignment_preview_styler = (
         assignment_preview.style
@@ -552,6 +660,9 @@ with tab1:
             "DC (kWp)": st.column_config.NumberColumn(width="small"),
             "เลือก Inverter": st.column_config.TextColumn(width="small"),
             "Assigned Inverter": st.column_config.TextColumn(width="small"),
+            "MPPT": st.column_config.NumberColumn(width="small"),
+            "Input": st.column_config.NumberColumn(width="small"),
+            "MPPT total modules": st.column_config.NumberColumn(width="small"),
         },
     )
 
@@ -569,6 +680,7 @@ with tab2:
         st.warning(
             f"จำนวนแผงรวม {total_modules:,} เป็นเลขคี่ — กรุณาปรับเป็นเลขคู่ เนื่องจาก Rapid Shutdown / Optimizer ใช้อัตรา 2:1"
         )
+    st.caption("เกณฑ์ Engine: ทุก String เป็นเลขคู่ และจำนวนแผงระหว่าง String ต่างกันไม่เกิน 2 แผง")
     if design.get("critical_missing"):
         st.error("ต้องกรอก datasheet inverter ให้ครบก่อนสร้างคำแนะนำ")
     else:
