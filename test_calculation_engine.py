@@ -152,7 +152,7 @@ def test_auto_comparison_counts_voltage_invalid_strings_as_unassigned():
     sg36 = options[options["inverter_id"] == "SG36CX-P2"].iloc[0]
     assert sg36["status"] == "FAIL"
     assert sg36["assigned_strings"] == 0
-    assert sg36["unassigned_strings"] == 2
+    assert sg36["unassigned_strings"] == sg36["total_inputs"] == 8
 
 
 def test_design_is_balanced_and_exported_by_inverter_set():

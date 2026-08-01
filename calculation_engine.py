@@ -185,13 +185,14 @@ def recommend_inverter_options(
             })
             continue
         if invalid_string_criteria:
+            total_inputs = int(inverter["mppt_qty"]) * int(inverter["inputs_per_mppt"])
             rows.append({
                 "inverter_id": inverter.get("inverter_id"),
                 "inverter_model": inverter.get("model"),
                 "recommended_qty": None,
                 "dc_ac_ratio": None,
-                "assigned_strings": int(len(valid_modules)),
-                "unassigned_strings": 0,
+                "assigned_strings": 0,
+                "unassigned_strings": total_inputs,
                 "used_mppt": 0,
                 "total_mppt": int(inverter["mppt_qty"]),
                 "total_inputs": int(inverter["mppt_qty"]) * int(inverter["inputs_per_mppt"]),
@@ -203,7 +204,9 @@ def recommend_inverter_options(
         minimum_dc_qty = max(1, math.ceil(total_dc_kwp / (float(ac_kw) * max_dcac)))
         best = None
         last_design = None
+        attempted_quantity = minimum_dc_qty
         for quantity in range(minimum_dc_qty, max_quantity + 1):
+            attempted_quantity = quantity
             last_design = calculate_design(
                 module=module,
                 inverter=inverter,
@@ -246,7 +249,8 @@ def recommend_inverter_options(
                 and candidate_strings["electrical_status"].eq("PASS").all()
             )
             assigned = int((assignments.get("assignment_status") == "PASS").sum()) if not assignments.empty and string_pass else 0
-            unassigned = total_strings - assigned if total_strings else None
+            total_inputs = int(inverter["mppt_qty"]) * int(inverter["inputs_per_mppt"]) * int(attempted_quantity)
+            unassigned = max(0, total_inputs - assigned) if total_inputs else None
             warnings = (last_design or {}).get("input_warnings", [])
             if not string_pass:
                 warnings = [
@@ -262,23 +266,25 @@ def recommend_inverter_options(
                 "unassigned_strings": unassigned,
                 "used_mppt": int(assignments["mppt_no"].nunique()) if not assignments.empty and string_pass else 0,
                 "total_mppt": int(inverter["mppt_qty"]),
-                "total_inputs": int(inverter["mppt_qty"]) * int(inverter["inputs_per_mppt"]),
+                "total_inputs": total_inputs,
                 "status": "FAIL",
                 "comment": "; ".join(warnings) or "ไม่สามารถจัด String ลง MPPT ได้ครบตามเกณฑ์",
             })
             continue
 
         assignments = best["assignments"]
+        total_inputs = int(inverter["mppt_qty"]) * int(inverter["inputs_per_mppt"]) * int(quantity)
+        assigned = int(len(assignments))
         rows.append({
             "inverter_id": inverter.get("inverter_id"),
             "inverter_model": inverter.get("model"),
             "recommended_qty": quantity,
             "dc_ac_ratio": best.get("actual_dcac_ratio"),
-            "assigned_strings": int(len(assignments)),
-            "unassigned_strings": 0,
+            "assigned_strings": assigned,
+            "unassigned_strings": max(0, total_inputs - assigned),
             "used_mppt": int(assignments["mppt_no"].nunique()),
             "total_mppt": int(inverter["mppt_qty"]),
-            "total_inputs": int(inverter["mppt_qty"]) * int(quantity) * int(inverter["inputs_per_mppt"]),
+            "total_inputs": total_inputs,
             "status": "PASS",
             "comment": "ผ่านเกณฑ์จำนวน String คู่, เกลี่ยต่างกันไม่เกิน 2 แผง และจัด MPPT ได้ครบ",
         })

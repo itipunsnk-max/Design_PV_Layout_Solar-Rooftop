@@ -762,28 +762,44 @@ with tab2:
             f"จำนวนแผงรวม {total_modules:,} เป็นเลขคี่ — กรุณาปรับเป็นเลขคู่ เนื่องจาก Rapid Shutdown / Optimizer ใช้อัตรา 2:1"
         )
     st.caption("เกณฑ์ Engine: ทุก String เป็นเลขคู่ และจำนวนแผงระหว่าง String ต่างกันไม่เกิน 2 แผง")
+    dc_max_values = sorted(
+        pd.to_numeric(master_inverters["dc_max_v"], errors="coerce")
+        .dropna()
+        .astype(float)
+        .unique()
+        .tolist()
+    )
+    dc_max_scope_labels = [f"DC max V = {int(value):,} V" for value in dc_max_values]
     auto_layout_inverter_options = [
-        "AUTO (ใช้รุ่นที่เลือกจากหน้า 1)",
-        *master_inverters["inverter_id"].tolist(),
+        "AUTO (อ้างอิง Inverter จากหน้า 1)",
+        *dc_max_scope_labels,
     ]
     auto_layout_inverter_choice = st.selectbox(
-        "เลือกกลุ่ม Inverter สำหรับกำหนด DC max V",
+        "เลือก Scope แรงดัน DC max V จากตาราง Inverter",
         auto_layout_inverter_options,
         index=0,
         help="DC max V ใช้กำหนดจำนวนแผงสูงสุดต่อ String; ระบบจะตรวจ MPPT min/startup และ safety factor ร่วมด้วย",
     )
     if auto_layout_inverter_choice.startswith("AUTO"):
         auto_layout_inverter = inverter
+        auto_layout_comment = (
+            f"AUTO อ้างอิง {inverter['model']} จากหน้า 1.ข้อมูลตั้งต้น — "
+            "หากต้องการเปลี่ยนรุ่น ให้กลับไปเลือกที่หน้า 1"
+        )
     else:
-        auto_layout_inverter = master_inverters.loc[
-            master_inverters["inverter_id"].eq(auto_layout_inverter_choice)
-        ].iloc[0].to_dict()
+        selected_dc_max_v = float(dc_max_values[dc_max_scope_labels.index(auto_layout_inverter_choice)])
+        auto_layout_inverter = inverter.copy()
+        auto_layout_inverter["dc_max_v"] = selected_dc_max_v
+        auto_layout_comment = (
+            f"เลือก Scope เฉพาะ DC max V = {selected_dc_max_v:,.0f} V จากตาราง Inverter — "
+            f"ช่วง MPPT/startup ยังอ้างอิง {inverter['model']} จากหน้า 1"
+        )
     auto_layout_limits = calculate_string_limits(
         module, auto_layout_inverter, tmin, tcell_max, safety_factor
     )
     if auto_layout_limits:
         st.caption(
-            f"ใช้ {auto_layout_inverter['model']} | DC max V = {float(auto_layout_inverter['dc_max_v']):,.0f} V | "
+            f"{auto_layout_comment} | DC max V = {float(auto_layout_inverter['dc_max_v']):,.0f} V | "
             f"Nmin MPPT = {auto_layout_limits['nmin_mppt']} | Nmax design = {auto_layout_limits['nmax_design']} แผง — "
             "DC max V เป็นเพดานแรงดันฝั่ง PV ไม่ใช่กำลัง AC ของ Inverter"
         )
