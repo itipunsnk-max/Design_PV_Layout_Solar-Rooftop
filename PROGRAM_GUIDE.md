@@ -112,6 +112,21 @@ Master Data + Design Basis + Roof Groups
 - เลือกวัสดุ/ขนาดสาย และเกณฑ์ voltage drop/DC loss
 - กรอก Candidate strings จาก roof layout
 
+#### ช่องสำคัญที่ต้องตรวจสอบ
+
+โปรแกรมได้เฮลสีเหลืองและตีกรอบเพื่อเน้น 3 ช่องหลัก:
+
+1. **รุ่น Inverter** ในหน้า **1. ข้อมูลตั้งต้น**  
+   - เลือก `AUTO` เพื่อให้ระบบเปรียบเทียบรุ่นที่ผ่านเกณฑ์และใช้จำนวนเครื่องน้อยที่สุด
+   - รุ่นที่ AUTO เลือกจะแสดงในข้อความใต้ช่องเลือก และถูกนำไปใช้ใน Candidate strings / MPPT
+2. **จำนวนแผงรวมที่มี** ในหน้า **2. Auto-layout & String**  
+   - ต้องเป็นเลขคู่ เพราะ Rapid Shutdown / Optimizer อัตรา 2:1
+   - Engine จะจัด String ให้มีจำนวนแผงต่างกันไม่เกิน 2 แผง
+3. **Scope แรงดัน DC max V** ในหน้า **2. Auto-layout & String**  
+   - ตัวเลือกจะแสดงเฉพาะค่า `dc_max_v` ที่มีอยู่ในตาราง Master Inverter เท่านั้น (เช่น 1100 V และ 1500 V)
+   - `AUTO` จะอ้างอิง Inverter ที่เลือกจากหน้า 1; หากต้องเปลี่ยนรุ่นให้กลับไปเปลี่ยนที่หน้า 1
+   - ค่า DC max V ใช้เป็นเพดานแรงดันฝั่ง PV เพื่อคำนวณ Nmax ของ String ไม่ใช่กำลัง AC ของ Inverter
+
 แท็บ **Master Data**
 
 - แก้ข้อมูล datasheet ระหว่าง session ได้
@@ -183,6 +198,32 @@ String ที่ต่อขนานบน MPPT เดียวกันต้�
   kWp/MPPT ได้ แต่ส่วนตรวจสายจะแสดง Warning จนกว่าจะกรอกระยะ
 - หาก Streamlit Cloud เพิ่ง deploy source code รุ่นใหม่ ให้ Reload หน้าเพื่อล้าง widget
   state จาก source code รุ่นก่อนหนึ่งครั้ง
+
+### 4.5 ตาราง Export Excel จากหน้า 1
+
+ด้านล่างสุดของหน้า **1. ข้อมูลตั้งต้น** มีตาราง **Export Excel — String / MPPT** สำหรับตรวจสอบและดาวน์โหลดผลการจัด String รายละเอียด
+
+คอลัมน์ในไฟล์ Excel เรียงตามลำดับนี้:
+
+`Roof ID, Zone, String ID, Modules, DC (kWp), Assigned Inverter,
+Inverter model, MPPT, String, MPPT total modules, Tilt (deg),
+Azimuth (deg), Shading, One-way cable (m)`
+
+- ตารางใช้ผล `Assigned Inverter` จาก Calculation Engine เป็นหลัก
+- ไม่รวมคอลัมน์ `เลือก Inverter` ซึ่งเป็นค่าความต้องการก่อนจัดจริง
+- ไฟล์ที่ดาวน์โหลดมีการแช่หัวตาราง, ฟรีซ์แถวหัวตาราง และเปิดกรองได้
+
+### 4.6 ตาราง Export แบบรวม 16 คอลัมน์
+
+ตาราง **Export Excel — Input + Assignment (16 คอลัมน์)** ด้านล่างสุดหน้า 1 รวมข้อมูลตามลำดับในรูป:
+
+`Roof ID, Zone, Group ID, Modules, DC (kWp), เลือก Inverter,
+Orientation, Tilt (deg), Azimuth (deg), Shading, One-way cable (m) optional,
+Assigned Inverter, Inverter model, MPPT, String, MPPT total modules`
+
+- คอลัมน์ 1–11 เป็นข้อมูลจากตารางกรอก
+- คอลัมน์ 12–16 เป็นผลจาก Calculation Engine
+- ใช้ปุ่ม **Export ตาราง Input + Assignment เป็น Excel (16 คอลัมน์)** เพื่อดาวน์โหลดผลรวม
 
 ## 5. การแบ่ง Design เป็นราย Inverter
 

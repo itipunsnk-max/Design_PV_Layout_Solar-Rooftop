@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+from io import BytesIO
 
 import pandas as pd
 import streamlit as st
@@ -20,6 +21,21 @@ div[data-testid="stMetric"] {background:#f1f7f5;border:1px solid #c8ded6;padding
 div[data-testid="stDataFrame"] [role="columnheader"] {
     white-space:normal !important;
     line-height:1.15 !important;
+}
+.important-field-title {
+    background:linear-gradient(90deg,#fff3a3 0%,#fffbe6 100%);
+    border:2px solid #eab308;
+    border-left:7px solid #ca8a04;
+    border-radius:.45rem;
+    color:#713f12;
+    font-weight:800;
+    padding:.42rem .7rem;
+    margin-bottom:.35rem;
+}
+.important-field-note {
+    color:#854d0e;
+    font-size:.82rem;
+    margin:.1rem 0 .5rem;
 }
 </style>""", unsafe_allow_html=True)
 
@@ -155,7 +171,8 @@ def _sequence_number(value: object) -> int | None:
 def assignment_row_style(row: pd.Series) -> list[str]:
     """Highlight MPPT groups and String order without hiding status colors."""
     mppt_number = _sequence_number(row.get("MPPT"))
-    string_number = _sequence_number(row.get("String ID"))
+    string_identifier = row.get("String ID", row.get("Group ID"))
+    string_number = _sequence_number(string_identifier)
     mppt_color = (
         MPPT_HIGHLIGHT_COLORS[(mppt_number - 1) % len(MPPT_HIGHLIGHT_COLORS)]
         if mppt_number else "#ffffff"
@@ -165,7 +182,7 @@ def assignment_row_style(row: pd.Series) -> list[str]:
         if string_number else "#94a3b8"
     )
     styles = [f"background-color:{mppt_color};" for _ in row.index]
-    for column in ("String ID", "String"):
+    for column in ("String ID", "Group ID", "String"):
         if column in row.index:
             styles[row.index.get_loc(column)] = (
                 f"background-color:{mppt_color};color:{string_color};"
@@ -177,6 +194,95 @@ def assignment_row_style(row: pd.Series) -> list[str]:
             "border:2px solid #64748b;"
         )
     return styles
+
+
+def make_string_export_frame(candidate_frame: pd.DataFrame) -> pd.DataFrame:
+    """Build the final Excel table in the approved 14-column order."""
+    export_frame = candidate_frame[[
+        "roof_id", "zone", "group_id", "modules", "string_kwp",
+        "inverter_id", "inverter_model", "mppt_no", "input_no",
+        "mppt_total_modules", "tilt_deg", "azimuth_deg", "shading",
+        "one_way_m",
+    ]].copy()
+    return export_frame.rename(columns={
+        "roof_id": "Roof ID",
+        "zone": "Zone",
+        "group_id": "String ID",
+        "modules": "Modules",
+        "string_kwp": "DC (kWp)",
+        "inverter_id": "Assigned Inverter",
+        "inverter_model": "Inverter model",
+        "mppt_no": "MPPT",
+        "input_no": "String",
+        "mppt_total_modules": "MPPT total modules",
+        "tilt_deg": "Tilt (deg)",
+        "azimuth_deg": "Azimuth (deg)",
+        "shading": "Shading",
+        "one_way_m": "One-way cable (m)",
+    })
+
+
+def make_input_assignment_export_frame(candidate_frame: pd.DataFrame) -> pd.DataFrame:
+    """Build the combined 16-column table shown in the Page 1 export request."""
+    export_frame = candidate_frame[[
+        "roof_id", "zone", "group_id", "modules", "string_kwp",
+        "inverter_override", "orientation", "tilt_deg", "azimuth_deg",
+        "shading", "one_way_m", "inverter_id", "inverter_model", "mppt_no",
+        "input_no", "mppt_total_modules",
+    ]].copy()
+    return export_frame.rename(columns={
+        "roof_id": "Roof ID",
+        "zone": "Zone",
+        "group_id": "Group ID",
+        "modules": "Modules",
+        "string_kwp": "DC (kWp)",
+        "inverter_override": "เลือก Inverter",
+        "orientation": "Orientation",
+        "tilt_deg": "Tilt (deg)",
+        "azimuth_deg": "Azimuth (deg)",
+        "shading": "Shading",
+        "one_way_m": "One-way cable (m) optional",
+        "inverter_id": "Assigned Inverter",
+        "inverter_model": "Inverter model",
+        "mppt_no": "MPPT",
+        "input_no": "String",
+        "mppt_total_modules": "MPPT total modules",
+    })
+
+
+def string_export_xlsx_bytes(export_frame: pd.DataFrame) -> bytes:
+    """Serialize the final String/MPPT table as a formatted Excel workbook."""
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        export_frame.to_excel(writer, index=False, sheet_name="String Export")
+        worksheet = writer.sheets["String Export"]
+        worksheet.freeze_panes = "A2"
+        worksheet.auto_filter.ref = worksheet.dimensions
+        from openpyxl.styles import Alignment, Font, PatternFill
+
+        header_fill = PatternFill("solid", fgColor="0F766E")
+        header_font = Font(color="FFFFFF", bold=True)
+        for cell in worksheet[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        for column_cells in worksheet.columns:
+            column_letter = column_cells[0].column_letter
+            max_length = max(len(str(cell.value or "")) for cell in column_cells)
+            worksheet.column_dimensions[column_letter].width = min(max(max_length + 2, 12), 28)
+        column_indexes = {
+            cell.value: cell.column - 1 for cell in worksheet[1]
+        }
+        for row in worksheet.iter_rows(min_row=2):
+            for column_name in ("Modules", "MPPT", "String", "MPPT total modules"):
+                index = column_indexes.get(column_name)
+                if index is not None:
+                    row[index].number_format = "0"
+            for column_name in ("DC (kWp)", "Tilt (deg)", "Azimuth (deg)", "One-way cable (m)", "One-way cable (m) optional"):
+                index = column_indexes.get(column_name)
+                if index is not None:
+                    row[index].number_format = "#,##0.000" if column_name == "DC (kWp)" else "0.00"
+    return output.getvalue()
 
 
 def display(frame: pd.DataFrame, status_columns: list[str]) -> None:
@@ -317,12 +423,20 @@ with tab1:
     with col2:
         st.subheader("Inverter")
         inverter_select_options = ["AUTO", *master_inverters["inverter_id"].tolist()]
-        selected_inv_choice = st.selectbox(
-            "รุ่น Inverter",
-            inverter_select_options,
-            index=0,
-            help="AUTO = เลือกรุ่นที่ใช้จำนวน Inverter น้อยที่สุดและจัด String/MPPT ให้ครบ",
-        )
+        with st.container(border=True):
+            st.markdown(
+                "<div class='important-field-title'>⭐ ช่องสำคัญ: รุ่น Inverter</div>"
+                "<div class='important-field-note'>เลือก AUTO เพื่อให้ระบบเลือกรุ่นที่ใช้จำนวนเครื่องน้อยที่สุดและจัด String/MPPT ได้ครบ</div>",
+                unsafe_allow_html=True,
+            )
+            selected_inv_choice = st.selectbox(
+                "รุ่น Inverter",
+                inverter_select_options,
+                index=0,
+                key="initial_inverter_choice",
+                label_visibility="collapsed",
+                help="AUTO = เลือกรุ่นที่ใช้จำนวน Inverter น้อยที่สุดและจัด String/MPPT ให้ครบ",
+            )
         selected_inv = (
             selected_inv_choice
             if selected_inv_choice != "AUTO"
@@ -747,6 +861,49 @@ with tab1:
         },
     )
 
+    st.subheader("ตาราง Export Excel — String / MPPT")
+    st.caption(
+        "จัดลำดับคอลัมน์ตามแบบ Export: Roof ID, Zone, String ID, Modules, DC (kWp), "
+        "Assigned Inverter, Inverter model, MPPT, String, MPPT total modules, "
+        "Tilt, Azimuth, Shading และ One-way cable"
+    )
+    string_export_frame = make_string_export_frame(candidate_editor_frame)
+    string_export_styler = (
+        string_export_frame.style
+        .format({"DC (kWp)": "{:,.3f}"}, na_rep="-")
+        .apply(assignment_row_style, axis=1)
+        .map(inverter_cell_style, subset=["Assigned Inverter"])
+    )
+    st.dataframe(string_export_styler, width="stretch", hide_index=True)
+    st.download_button(
+        "⬇️ Export ตาราง String / MPPT เป็น Excel",
+        data=string_export_xlsx_bytes(string_export_frame),
+        file_name="solar_string_mppt_export.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+
+    st.subheader("ตาราง Export Excel — Input + Assignment (16 คอลัมน์)")
+    st.caption(
+        "ตารางรวมตามแบบล่าสุด: 1–11 คือข้อมูลจากตารางกรอก และ 12–16 คือผล Assigned Inverter / MPPT "
+        "สำหรับใช้ส่งต่อ Excel"
+    )
+    input_assignment_export_frame = make_input_assignment_export_frame(candidate_editor_frame)
+    input_assignment_export_styler = (
+        input_assignment_export_frame.style
+        .format({"DC (kWp)": "{:,.3f}"}, na_rep="-")
+        .apply(assignment_row_style, axis=1)
+        .map(inverter_cell_style, subset=["Assigned Inverter"])
+    )
+    st.dataframe(input_assignment_export_styler, width="stretch", hide_index=True)
+    st.download_button(
+        "⬇️ Export ตาราง Input + Assignment เป็น Excel (16 คอลัมน์)",
+        data=string_export_xlsx_bytes(input_assignment_export_frame),
+        file_name="solar_string_input_assignment_export.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+
 design = calculate_design(module=module, inverter=inverter, module_power_w=module_power, tmin_c=tmin,
                           tcell_max_c=tcell_max, safety_factor=safety_factor, inverter_qty=inverter_qty_input,
                           max_dcac=max_dcac, cable_material=cable_material, cable_size_mm2=cable_size,
@@ -756,7 +913,21 @@ for warning in design.get("input_warnings", []):
 
 with tab2:
     st.subheader("แนะนำการจัด String จากจำนวนแผงรวม")
-    total_modules = st.number_input("จำนวนแผงรวมที่มี (Rapid Shutdown / Optimizer 2:1 — ให้เป็นจำนวนคู่)", 1, 100000, int(pd.to_numeric(st.session_state.roof_groups.modules, errors="coerce").fillna(0).sum()), 2)
+    with st.container(border=True):
+        st.markdown(
+            "<div class='important-field-title'>⭐ ช่องสำคัญ: จำนวนแผงรวมที่มี</div>"
+            "<div class='important-field-note'>Rapid Shutdown / Optimizer อัตรา 2:1 — ต้องกรอกเป็นจำนวนคู่</div>",
+            unsafe_allow_html=True,
+        )
+        total_modules = st.number_input(
+            "จำนวนแผงรวมที่มี",
+            min_value=1,
+            max_value=100000,
+            value=int(pd.to_numeric(st.session_state.roof_groups.modules, errors="coerce").fillna(0).sum()),
+            step=2,
+            key="auto_layout_total_modules",
+            label_visibility="collapsed",
+        )
     if total_modules % 2:
         st.warning(
             f"จำนวนแผงรวม {total_modules:,} เป็นเลขคี่ — กรุณาปรับเป็นเลขคู่ เนื่องจาก Rapid Shutdown / Optimizer ใช้อัตรา 2:1"
@@ -774,12 +945,20 @@ with tab2:
         "AUTO (อ้างอิง Inverter จากหน้า 1)",
         *dc_max_scope_labels,
     ]
-    auto_layout_inverter_choice = st.selectbox(
-        "เลือก Scope แรงดัน DC max V จากตาราง Inverter",
-        auto_layout_inverter_options,
-        index=0,
-        help="DC max V ใช้กำหนดจำนวนแผงสูงสุดต่อ String; ระบบจะตรวจ MPPT min/startup และ safety factor ร่วมด้วย",
-    )
+    with st.container(border=True):
+        st.markdown(
+            "<div class='important-field-title'>⭐ ช่องสำคัญ: Scope แรงดัน DC max V</div>"
+            "<div class='important-field-note'>เลือก AUTO เพื่ออ้างอิง Inverter จากหน้า 1 หรือเลือกค่า DC max V ที่มีในตาราง Master Inverter</div>",
+            unsafe_allow_html=True,
+        )
+        auto_layout_inverter_choice = st.selectbox(
+            "เลือก Scope แรงดัน DC max V จากตาราง Inverter",
+            auto_layout_inverter_options,
+            index=0,
+            key="auto_layout_dc_scope",
+            label_visibility="collapsed",
+            help="DC max V ใช้กำหนดจำนวนแผงสูงสุดต่อ String; ระบบจะตรวจ MPPT min/startup และ safety factor ร่วมด้วย",
+        )
     if auto_layout_inverter_choice.startswith("AUTO"):
         auto_layout_inverter = inverter
         auto_layout_comment = (
@@ -973,11 +1152,15 @@ with tab6:
     st.subheader("คู่มือใช้งานแบบย่อ")
     st.markdown("""
 1. ไปที่ **Master Data** และตรวจ/แก้ข้อมูล datasheet ของแผงและ inverter ให้ตรงรุ่น/market/revision
-2. ใน **ข้อมูลตั้งต้น** เลือกรุ่น กรอกอุณหภูมิ, safety factor, เกณฑ์ DC/AC และขนาดสาย
-3. ถ้ามีเพียงจำนวนแผง ให้ใช้ **Auto-layout & String** เพื่อรับจำนวนแผง/string ที่แนะนำ แล้วกดใช้ Auto-layout
-4. ถ้ามี layout อยู่แล้ว ให้กรอกแต่ละ roof group: จำนวนแผง, orientation, shading และ one-way cable route
-5. ดู **MPPT & Cable**: สถานะเขียว = PASS, แดง = FAIL, เหลือง = ต้องทบทวน พร้อม comment แนบท้ายทุกจุดที่ไม่ผ่าน
-6. ดู **QA/QC & PVsyst** ก่อนดาวน์โหลด CSV/JSON และต้องเพิ่มไฟล์ PAN/OND ที่ผ่านการยืนยันก่อนใช้ PVsyst
+2. ช่องสำคัญที่ต้องตรวจสอบคือ **รุ่น Inverter** หน้า 1, **จำนวนแผงรวม** และ **Scope DC max V** หน้า 2 (ช่องอยู่ในกรอบเหลือง)
+3. เลือก **รุ่น Inverter** เป็น `AUTO` เมื่อต้องให้ระบบเลือกจำนวนเครื่องน้อยที่สุดและจัด String/MPPT ได้ครบ
+4. ใน **Auto-layout & String** กรอก **จำนวนแผงรวม** เป็นเลขคู่ เพราะ Rapid Shutdown / Optimizer อัตรา 2:1 และจำนวนแผงระหว่าง String ต่างกันไม่เกิน 2 แผง
+5. เลือก **Scope DC max V** เพื่อกำหนด Nmax ด้านแรงดัน PV; `AUTO` จะอ้างอิง Inverter จากหน้า 1 และตัวเลือกจะแสดงเฉพาะค่าที่มีใน Master Inverter
+6. ถ้ามีเพียงจำนวนแผง ให้กด **ใช้ Auto-layout** เพื่อสร้าง Candidate strings และนำไปจัด MPPT
+7. ถ้ามี layout อยู่แล้ว ให้กรอกแต่ละ roof group: จำนวนแผง, orientation, shading และ one-way cable route
+8. ดู **MPPT & Cable**: สถานะเขียว = PASS, แดง = FAIL, เหลือง = ต้องทบทวน พร้อม comment แนบท้ายทุกจุดที่ไม่ผ่าน
+9. ดู **QA/QC & PVsyst** ก่อนดาวน์โหลด CSV/JSON และต้องเพิ่มไฟล์ PAN/OND ที่ผ่านการยืนยันก่อนใช้ PVsyst
+10. ตาราง **Export Excel — String / MPPT** และ **Export Excel — Input + Assignment (16 คอลัมน์)** ด้านล่างหน้า 1 ใช้ตรวจสอบและกดปุ่ม Export เพื่อดาวน์โหลด; ตารางรวม 16 คอลัมน์เรียงข้อมูลกรอก 1–11 และผลจัด 12–16 ตามรูป
 """)
     st.info("ไม่ควรแก้ข้อมูล master โดยไม่มี datasheet source; ห้ามถือว่า PASS หากช่อง verification ยังไม่ Verified")
 
