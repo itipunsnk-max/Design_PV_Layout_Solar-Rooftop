@@ -89,6 +89,7 @@ ROOF_COLUMNS = [
     "roof_id", "zone", "group_id", "modules", "inverter_override", "orientation",
     "tilt_deg", "azimuth_deg", "shading", "one_way_m", "mppt_override", "input_override",
 ]
+MAX_MANUAL_INVERTER_INDEX = 99
 INVERTER_COLORS = [
     ("#dbeafe", "#1e3a8a"),  # blue
     ("#dcfce7", "#14532d"),  # green
@@ -135,6 +136,42 @@ def default_roof_groups() -> pd.DataFrame:
 def _is_inverter_token(value: object) -> bool:
     normalized = str(value).strip().upper()
     return normalized == "AUTO" or bool(re.fullmatch(r"INV0*\d+", normalized))
+
+
+def _normalise_inverter_token(value: object) -> str:
+    """Canonicalise AUTO/INVxx values while keeping manual set selection free-form."""
+    normalized = "" if value is None else str(value).strip().upper()
+    if not normalized or normalized == "AUTO":
+        return "AUTO"
+    match = re.fullmatch(r"INV0*(\d+)", normalized)
+    if match:
+        number = int(match.group(1))
+        if 1 <= number <= MAX_MANUAL_INVERTER_INDEX:
+            return f"INV{number:02d}"
+    return normalized
+
+
+def _is_valid_inverter_override(value: object) -> bool:
+    normalized = _normalise_inverter_token(value)
+    if normalized == "AUTO":
+        return True
+    match = re.fullmatch(r"INV(\d+)", normalized)
+    return bool(match) and 1 <= int(match.group(1)) <= MAX_MANUAL_INVERTER_INDEX
+
+
+def _manual_inverter_quantity(frame: pd.DataFrame) -> int:
+    """Return the highest explicitly requested INV number in a candidate table."""
+    if "inverter_override" not in frame.columns:
+        return 1
+    numbers = []
+    for value in frame["inverter_override"].tolist():
+        normalized = _normalise_inverter_token(value)
+        match = re.fullmatch(r"INV(\d+)", normalized)
+        if match:
+            number = int(match.group(1))
+            if 1 <= number <= MAX_MANUAL_INVERTER_INDEX:
+                numbers.append(number)
+    return max(numbers, default=1)
 
 
 def _is_numeric_token(value: object) -> bool:
@@ -251,11 +288,17 @@ def parse_excel_clipboard(text: str) -> pd.DataFrame:
     for row_number, row in enumerate(rows, start=1):
         mppt_override, input_override = "AUTO", "AUTO"
         if len(row) == 10:
-            if _is_inverter_token(row[4]):
-                values = [*row, "AUTO", "AUTO"]
-            elif _is_numeric_token(row[4]) and _is_inverter_token(row[5]):
+            has_dc_column = (
+                (_is_numeric_token(row[4]) or str(row[4]).strip().upper() == "AUTO")
+                and _is_inverter_token(row[5])
+            )
+            if has_dc_column:
+                # DC (kWp) is an input/display column only. AUTO means that
+                # the value must be recalculated from Modules × panel Pmax.
                 values = [row[0], row[1], row[2], row[3], row[5],
                           row[6], row[7], row[8], row[9], None, "AUTO", "AUTO"]
+            elif _is_inverter_token(row[4]):
+                values = [*row, "AUTO", "AUTO"]
             else:
                 values = [*row, "AUTO", "AUTO"]
         elif len(row) == 11:
@@ -263,14 +306,22 @@ def parse_excel_clipboard(text: str) -> pd.DataFrame:
             values = [row[0], row[1], row[2], row[3], row[5],
                       row[6], row[7], row[8], row[9], row[10], "AUTO", "AUTO"]
         elif len(row) == 12:
-            if _is_inverter_token(row[4]):
+            has_dc_column = (
+                (_is_numeric_token(row[4]) or str(row[4]).strip().upper() == "AUTO")
+                and _is_inverter_token(row[5])
+                and not _is_inverter_token(row[6])
+            )
+            if has_dc_column:
+                # Current paste format with DC (kWp), selected Inverter, and
+                # MPPT/String overrides:
+                # Roof, Zone, Group, Modules, DC, Inverter, Orientation,
+                # Tilt, Azimuth, Shading, MPPT, String.
+                values = [row[0], row[1], row[2], row[3], row[5],
+                          row[6], row[7], row[8], row[9], None, row[10], row[11]]
+            elif _is_inverter_token(row[4]):
                 # New input-only: the final two columns are MPPT and String.
                 values = [row[0], row[1], row[2], row[3], row[4],
                           row[5], row[6], row[7], row[8], row[9], row[10], row[11]]
-            elif _is_numeric_token(row[4]) and _is_inverter_token(row[5]) and not _is_inverter_token(row[6]):
-                # Compact legacy with calculated kWp and the final two overrides.
-                values = [row[0], row[1], row[2], row[3], row[5],
-                          row[6], row[7], row[8], row[9], None, row[10], row[11]]
             else:
                 # Current display: calculated kWp + selected and assigned Inverter.
                 values = [row[0], row[1], row[2], row[3], row[5],
@@ -295,10 +346,7 @@ def parse_excel_clipboard(text: str) -> pd.DataFrame:
             one_way = float(str(values[9]).replace(",", "")) if values[9] else None
         except (TypeError, ValueError) as error:
             raise ValueError(f"แถว {row_number} มีค่าตัวเลขไม่ถูกต้อง") from error
-        inverter_value = str(values[4]).upper() if values[4] else "AUTO"
-        match = re.fullmatch(r"INV0*(\d+)", inverter_value)
-        if match:
-            inverter_value = f"INV{int(match.group(1)):02d}"
+        inverter_value = _normalise_inverter_token(values[4])
         mppt_override = _normalise_slot_token(values[10])
         input_override = _normalise_slot_token(values[11])
         parsed_rows.append([
@@ -699,6 +747,7 @@ with tab1:
             max_dc_loss=max_dc_loss,
             strings=st.session_state.roof_groups,
             inverter_master=master_inverters,
+            max_quantity=max(50, _manual_inverter_quantity(st.session_state.roof_groups)),
         )
         passing_options = auto_inverter_options[
             auto_inverter_options["status"].isin(["PASS", "WARNING"])
@@ -774,9 +823,6 @@ with tab1:
             + (" ..." if len(duplicate_names) > 10 else "")
             + " — ควรแก้ให้ไม่ซ้ำเพื่อให้ติดตาม String ได้ถูกต้อง"
         )
-    inverter_options = [
-        "AUTO", *[f"INV{number:02d}" for number in range(1, inverter_qty_input + 1)]
-    ]
     with st.expander("📋 Paste หลายแถวจาก Excel (รองรับ 10/11/12/13/14 คอลัมน์)"):
         with st.form("excel_clipboard_form", clear_on_submit=False):
             st.caption(
@@ -790,7 +836,7 @@ with tab1:
                 "วางข้อมูลจาก Excel ที่นี่",
                 key="excel_clipboard_text",
                 height=150,
-                placeholder="AUTO  Auto  G01  20  14.5  AUTO  TBC  0  0  TBC  AUTO  AUTO",
+                placeholder="AUTO Auto G01 20 AUTO INV03 TBC 0 0 TBC AUTO AUTO",
             )
             paste_mode = st.radio(
                 "วิธีนำเข้า",
@@ -807,7 +853,7 @@ with tab1:
                 imported_roof_groups = parse_excel_clipboard(clipboard_text)
                 invalid_imported_inverters = ~imported_roof_groups[
                     "inverter_override"
-                ].isin(inverter_options)
+                ].map(_is_valid_inverter_override)
                 if invalid_imported_inverters.any():
                     invalid_values = imported_roof_groups.loc[
                         invalid_imported_inverters, "inverter_override"
@@ -829,6 +875,21 @@ with tab1:
             except ValueError as error:
                 st.error(str(error))
 
+    # Normalise manual inverter labels before calculating.  If a row explicitly
+    # requests INVxx, make that set physically available to the engine even when
+    # the sidebar quantity is lower (for example, INV03 or INV99).
+    candidate_roof_groups = st.session_state.roof_groups.copy()
+    candidate_roof_groups["inverter_override"] = candidate_roof_groups[
+        "inverter_override"
+    ].map(_normalise_inverter_token)
+    invalid_candidate_overrides = ~candidate_roof_groups["inverter_override"].map(
+        _is_valid_inverter_override
+    )
+    candidate_roof_groups.loc[invalid_candidate_overrides, "inverter_override"] = "AUTO"
+    requested_manual_qty = _manual_inverter_quantity(candidate_roof_groups)
+    if requested_manual_qty > inverter_qty_input:
+        inverter_qty_input = requested_manual_qty
+
     # Calculate a live preview from the currently persisted editor rows.  The two
     # derived columns are shown in the same grid but disabled to prevent manual edits.
     candidate_preview_design = calculate_design(
@@ -837,9 +898,9 @@ with tab1:
         inverter_qty=inverter_qty_input, max_dcac=max_dcac,
         cable_material=cable_material, cable_size_mm2=cable_size,
         max_voltage_drop=max_voltage_drop, max_dc_loss=max_dc_loss,
-        strings=st.session_state.roof_groups,
+        strings=candidate_roof_groups,
     )
-    candidate_editor_frame = st.session_state.roof_groups.copy().reset_index(drop=True)
+    candidate_editor_frame = candidate_roof_groups.copy().reset_index(drop=True)
     candidate_editor_frame.insert(
         candidate_editor_frame.columns.get_loc("modules") + 1,
         "string_kwp",
@@ -894,8 +955,8 @@ with tab1:
         ) in mppt_current_warning_keys
         or str(assignment_status_by_row.get(row_no, "")).upper() == "WARNING"
     }
-    invalid_overrides = ~candidate_editor_frame["inverter_override"].astype(str).isin(
-        inverter_options
+    invalid_overrides = ~candidate_editor_frame["inverter_override"].map(
+        _is_valid_inverter_override
     )
     if invalid_overrides.any():
         st.warning(
@@ -1034,9 +1095,9 @@ with tab1:
                     "กำลัง DC\n(kWp)", format="%.3f",
                     disabled=True, width="small"
                 ),
-                "inverter_override": st.column_config.SelectboxColumn(
+                "inverter_override": st.column_config.TextColumn(
                     "เลือก\nInverter",
-                    options=inverter_options,
+                    max_chars=10,
                     required=True,
                     width="small",
                     help="AUTO = โปรแกรมแบ่งกลุ่มให้ หรือเลือก INVxx เพื่อบังคับ String นี้",
@@ -1087,6 +1148,13 @@ with tab1:
             .copy()
             .reset_index(drop=True)
         )
+        edited_roof_groups["inverter_override"] = edited_roof_groups[
+            "inverter_override"
+        ].map(_normalise_inverter_token)
+        invalid_edited_overrides = ~edited_roof_groups["inverter_override"].map(
+            _is_valid_inverter_override
+        )
+        edited_roof_groups.loc[invalid_edited_overrides, "inverter_override"] = "AUTO"
         st.session_state.roof_groups = edited_roof_groups
         st.session_state.roof_editor_revision += 1
         st.session_state.roof_saved_notice = True
