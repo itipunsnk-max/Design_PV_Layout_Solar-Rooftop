@@ -381,6 +381,20 @@ streamlit run streamlit_app.py
 python -m pytest -q
 ```
 
+### รูปแบบ Paste แบบย่อ 10 คอลัมน์
+
+ส่วน **Paste หลายแถวจาก Excel** รองรับข้อมูลที่คั่นด้วย Tab หรือช่องว่างตั้งแต่ 2 ช่องขึ้นไป โดยสามารถวางรูปแบบที่มีค่า DC (kWp) แต่ไม่ต้องใส่ One-way cable ได้ เช่น:
+
+```text
+AUTO  Auto  G01  20  14.5  AUTO  TBC  0  0  TBC
+```
+
+ลำดับคอลัมน์คือ:
+
+`Roof ID | Zone | Group ID | Modules | DC (kWp) | เลือก Inverter | Orientation | Tilt | Azimuth | Shading`
+
+ค่า `DC (kWp)` ใช้แสดงผลประกอบการ Paste และระบบจะคำนวณค่าใหม่จากจำนวนแผงกับกำลังแผงเมื่อกดบันทึก/คำนวณ ส่วน `One-way cable` เป็น Optional และสามารถกรอกภายหลังได้
+
 ก่อนนำผลไปใช้งานจริง ต้องตรวจอย่างน้อย:
 
 1. รุ่น/รหัสต่อท้ายและ revision ของ datasheet

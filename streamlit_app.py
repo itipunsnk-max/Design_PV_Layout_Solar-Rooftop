@@ -57,6 +57,32 @@ div[data-testid="stDataFrame"] [role="columnheader"] {
     font-size:1rem;
     font-weight:800;
 }
+.inverter-set-highlight {
+    display:flex;
+    align-items:center;
+    gap:.65rem;
+    flex-wrap:wrap;
+    background:linear-gradient(90deg,#fff3a3 0%,#fffbe6 100%);
+    border:2px solid #eab308;
+    border-left:7px solid #ca8a04;
+    border-radius:.5rem;
+    color:#713f12;
+    padding:.55rem .75rem;
+    margin:.55rem 0 .7rem;
+}
+.inverter-set-highlight-title {
+    font-weight:800;
+}
+.inverter-set-chip {
+    display:inline-block;
+    background:#ffffff;
+    border:2px solid #eab308;
+    border-radius:.35rem;
+    color:#713f12;
+    font-weight:800;
+    padding:.18rem .55rem;
+    margin:.1rem .15rem;
+}
 </style>""", unsafe_allow_html=True)
 
 ROOF_COLUMNS = [
@@ -106,10 +132,27 @@ def default_roof_groups() -> pd.DataFrame:
     ], columns=ROOF_COLUMNS)
 
 
+def _is_inverter_token(value: object) -> bool:
+    normalized = str(value).strip().upper()
+    return normalized == "AUTO" or bool(re.fullmatch(r"INV0*\d+", normalized))
+
+
+def _is_numeric_token(value: object) -> bool:
+    try:
+        float(str(value).strip().replace(",", ""))
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
 def parse_excel_clipboard(text: str) -> pd.DataFrame:
-    """Parse tab-separated Excel rows in legacy or current table order."""
+    """Parse Excel rows with optional calculated kWp and optional one-way cable."""
     rows = [
-        [cell.strip() for cell in line.split("\t")]
+        (
+            [cell.strip() for cell in line.split("\t")]
+            if "\t" in line
+            else [cell.strip() for cell in re.split(r"\s{2,}", line.strip())]
+        )
         for line in text.splitlines()
         if line.strip()
     ]
@@ -124,9 +167,17 @@ def parse_excel_clipboard(text: str) -> pd.DataFrame:
     parsed_rows = []
     for row_number, row in enumerate(rows, start=1):
         if len(row) == 10:
-            # Input-only: roof, zone, group, modules, inverter, orientation,
-            # tilt, azimuth, shading, one-way.
-            values = row
+            if _is_inverter_token(row[4]):
+                # Input-only: roof, zone, group, modules, inverter, orientation,
+                # tilt, azimuth, shading, one-way.
+                values = row
+            elif _is_numeric_token(row[4]) and _is_inverter_token(row[5]):
+                # Compact legacy: roof, zone, group, modules, calculated kWp,
+                # inverter, orientation, tilt, azimuth, shading. One-way is omitted.
+                values = [row[0], row[1], row[2], row[3], row[5],
+                          row[6], row[7], row[8], row[9], None]
+            else:
+                values = row
         elif len(row) == 11:
             # Legacy display: includes calculated kWp at index 4.
             values = [row[0], row[1], row[2], row[3], row[5],
@@ -594,11 +645,17 @@ with tab1:
     ]
     with st.expander("📋 Paste หลายแถวจาก Excel (รองรับ 10/11/12 คอลัมน์)"):
         with st.form("excel_clipboard_form", clear_on_submit=False):
+            st.caption(
+                "รองรับ 3 รูปแบบ: 10 คอลัมน์ input-only, 10 คอลัมน์แบบมี DC (kWp) "
+                "แต่ไม่ต้องใส่ One-way cable และ 11/12 คอลัมน์จากตารางเดิม "
+                "โดยรูปแบบ 10 คอลัมน์แบบมี DC ใช้ลำดับ: Roof ID, Zone, Group ID, "
+                "Modules, DC (kWp), เลือก Inverter, Orientation, Tilt, Azimuth, Shading"
+            )
             clipboard_text = st.text_area(
                 "วางข้อมูลจาก Excel ที่นี่",
                 key="excel_clipboard_text",
                 height=150,
-                placeholder="RF01\tUpper\tG01\t18\t13.050\tINV01\tPortrait\t10\t180\tLow\t35",
+                placeholder="AUTO  Auto  G01  20  14.5  AUTO  TBC  0  0  TBC",
             )
             paste_mode = st.radio(
                 "วิธีนำเข้า",
@@ -1057,6 +1114,17 @@ with tab3:
     display(design["inverter_summary"], ["status"])
     if not design["assignments"].empty:
         inverter_sets = design["inverter_summary"]["inverter_id"].tolist()
+        inverter_set_chips = "".join(
+            f"<span class='inverter-set-chip'>{inverter_id}</span>"
+            for inverter_id in inverter_sets
+        )
+        st.markdown(
+            "<div class='inverter-set-highlight'>"
+            "<span class='inverter-set-highlight-title'>⭐ Inverter Design Sets ที่กำลังตรวจสอบ:</span>"
+            f"<span>{inverter_set_chips}</span>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
         set_tabs = st.tabs(inverter_sets)
         for set_tab, inverter_id in zip(set_tabs, inverter_sets):
             with set_tab:
