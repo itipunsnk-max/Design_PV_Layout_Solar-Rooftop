@@ -572,6 +572,71 @@ def display(frame: pd.DataFrame, status_columns: list[str]) -> None:
     st.dataframe(styler, use_container_width=True, hide_index=True)
 
 
+def rapid_shutdown_optimizer_summary(
+    assignments: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Summarise Rapid Shutdown/Optimizer quantities by Inverter and String.
+
+    The design basis is two PV modules per device. Each String therefore uses
+    CEILING(Modules / 2) devices, so 17 modules -> 9 devices and 16 -> 8.
+    """
+    summary_columns = [
+        "Assigned Inverter", "Strings", "Modules", "DC (kWp)",
+        "Rapid Shutdown / Optimizer",
+    ]
+    detail_columns = [
+        "Assigned Inverter", "String ID", "Modules", "DC (kWp)",
+        "Rapid Shutdown / Optimizer",
+    ]
+    if assignments.empty or "modules" not in assignments.columns:
+        return pd.DataFrame(columns=summary_columns), pd.DataFrame(columns=detail_columns)
+
+    detail = assignments.copy()
+    detail["modules"] = pd.to_numeric(detail["modules"], errors="coerce")
+    detail["string_kwp"] = pd.to_numeric(
+        detail.get("string_kwp", pd.Series(index=detail.index, dtype=float)),
+        errors="coerce",
+    )
+    detail["inverter_id"] = detail.get(
+        "inverter_id", pd.Series("UNASSIGNED", index=detail.index)
+    ).fillna("UNASSIGNED").astype(str)
+    detail["string_id"] = detail.get(
+        "string_id", pd.Series(index=detail.index, dtype=object)
+    ).fillna("-").astype(str)
+    detail = detail[detail["modules"].notna() & (detail["modules"] > 0)].copy()
+    if detail.empty:
+        return pd.DataFrame(columns=summary_columns), pd.DataFrame(columns=detail_columns)
+
+    detail["modules"] = detail["modules"].astype(int)
+    detail["rapid_shutdown_optimizer"] = (detail["modules"] + 1) // 2
+    summary = (
+        detail.groupby("inverter_id", sort=False)
+        .agg(
+            Strings=("string_id", "nunique"),
+            Modules=("modules", "sum"),
+            **{
+                "DC (kWp)": ("string_kwp", "sum"),
+                "Rapid Shutdown / Optimizer": (
+                    "rapid_shutdown_optimizer", "sum"
+                ),
+            },
+        )
+        .reset_index()
+        .rename(columns={"inverter_id": "Assigned Inverter"})
+    )
+    detail_frame = detail[[
+        "inverter_id", "string_id", "modules", "string_kwp",
+        "rapid_shutdown_optimizer",
+    ]].rename(columns={
+        "inverter_id": "Assigned Inverter",
+        "string_id": "String ID",
+        "modules": "Modules",
+        "string_kwp": "DC (kWp)",
+        "rapid_shutdown_optimizer": "Rapid Shutdown / Optimizer",
+    })
+    return summary[summary_columns], detail_frame[detail_columns]
+
+
 def totals_bar(strings: pd.DataFrame, title: str = "สรุปรวม", total_ac_kw: float | None = None) -> None:
     """Show consistent project totals immediately above schedule tables."""
     if strings.empty:
@@ -1013,11 +1078,22 @@ with tab1:
         "Project DC/AC ratio",
         f"{actual_dcac:.3f}" if actual_dcac is not None else "-",
     )
+    optimizer_summary, optimizer_detail = rapid_shutdown_optimizer_summary(
+        candidate_preview_design.get("assignments", pd.DataFrame())
+    )
+    optimizer_by_inverter = (
+        optimizer_summary.set_index("Assigned Inverter")[
+            "Rapid Shutdown / Optimizer"
+        ].to_dict()
+        if not optimizer_summary.empty
+        else {}
+    )
     st.markdown("**จำนวน String แยกตาม Inverter**")
     inverter_cards = []
     for _, inverter_row in candidate_preview_design["inverter_summary"].iterrows():
         inverter_id = str(inverter_row["inverter_id"])
         background, foreground = inverter_colors(inverter_id)
+        optimizer_qty = int(optimizer_by_inverter.get(inverter_id, 0))
         inverter_cards.append(
             "<div style='min-width:170px;flex:1;padding:10px 14px;"
             f"background:{background};color:{foreground};"
@@ -1027,6 +1103,7 @@ with tab1:
             f"{int(inverter_row['assigned_strings']):,} Strings</div>"
             f"<div>{int(inverter_row['assigned_modules']):,} modules · "
             f"{float(inverter_row['assigned_dc_kwp']):,.3f} kWp</div>"
+            f"<div>Rapid Shutdown / Optimizer: {optimizer_qty:,} units</div>"
             "</div>"
         )
     st.markdown(
@@ -1035,6 +1112,46 @@ with tab1:
         + "</div>",
         unsafe_allow_html=True,
     )
+    st.markdown("**Rapid Shutdown / Optimizer Summary**")
+    st.caption(
+        "คำนวณราย String ด้วย CEILING(จำนวนแผง ÷ 2): 17 แผง = 9 ตัว, 16 แผง = 8 ตัว"
+    )
+    if optimizer_summary.empty:
+        st.info("ยังไม่มีผลการจัด String สำหรับคำนวณ Rapid Shutdown / Optimizer")
+    else:
+        optimizer_summary_styler = (
+            optimizer_summary.style
+            .format({"DC (kWp)": "{:,.3f}"}, na_rep="-")
+            .map(inverter_cell_style, subset=["Assigned Inverter"])
+        )
+        st.dataframe(
+            optimizer_summary_styler,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Assigned Inverter": st.column_config.TextColumn(width="small"),
+                "Strings": st.column_config.NumberColumn(width="small"),
+                "Modules": st.column_config.NumberColumn(width="small"),
+                "DC (kWp)": st.column_config.NumberColumn(width="small"),
+                "Rapid Shutdown / Optimizer": st.column_config.NumberColumn(width="medium"),
+            },
+        )
+        with st.expander("รายละเอียด Rapid Shutdown / Optimizer ราย String", expanded=False):
+            optimizer_detail_styler = optimizer_detail.style.format(
+                {"DC (kWp)": "{:,.3f}"}, na_rep="-"
+            ).map(inverter_cell_style, subset=["Assigned Inverter"])
+            st.dataframe(
+                optimizer_detail_styler,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "Assigned Inverter": st.column_config.TextColumn(width="small"),
+                    "String ID": st.column_config.TextColumn(width="small"),
+                    "Modules": st.column_config.NumberColumn(width="small"),
+                    "DC (kWp)": st.column_config.NumberColumn(width="small"),
+                    "Rapid Shutdown / Optimizer": st.column_config.NumberColumn(width="medium"),
+                },
+            )
     if candidate_preview_design.get("mppt_current_warnings"):
         st.error(
             "WARNING: พบช่อง MPPT ที่กระแสรวมเกินข้อจำกัด: "
