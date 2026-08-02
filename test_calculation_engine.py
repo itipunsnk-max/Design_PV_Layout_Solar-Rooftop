@@ -258,3 +258,94 @@ def test_user_can_manually_select_inverter_per_string():
     assert assigned.loc["G02", "inverter_id"] == "INV01"
     assert assigned.loc["G01", "assignment_mode"] == "MANUAL"
     assert assigned.loc["G03", "assignment_mode"] == "AUTO"
+
+
+def test_fourteen_high_current_strings_use_physical_inputs_across_inverter_types():
+    module = DEFAULT_MODULES.iloc[0].to_dict()
+    modules = [16, 16, 16, 16, 16, 18, 18, 16, 16, 17, 18, 18, 18, 18]
+    raw = pd.DataFrame(
+        [
+            ["AUTO", "Auto", f"G{i + 1:02d}", count, "INV01", "TBC", 0, 0, "TBC", None]
+            for i, count in enumerate(modules)
+        ],
+        columns=[
+            "roof_id", "zone", "group_id", "modules", "inverter_override",
+            "orientation", "tilt_deg", "azimuth_deg", "shading", "one_way_m",
+        ],
+    )
+
+    def run(inverter_id):
+        inverter = DEFAULT_INVERTERS.query("inverter_id == @inverter_id").iloc[0].to_dict()
+        return calculate_design(
+            module=module, inverter=inverter, module_power_w=725, tmin_c=10,
+            tcell_max_c=70, safety_factor=0.95, inverter_qty=1, max_dcac=1.4,
+            cable_material="Copper", cable_size_mm2=6, max_voltage_drop=0.015,
+            max_dc_loss=0.015, strings=raw,
+        )
+
+    for inverter_id in ["SG125CX-P2", "SG150CX", "SG350HX-20"]:
+        result = run(inverter_id)
+        assignments = result["assignments"]
+        assert len(assignments) == len(raw)
+        assert assignments["inverter_id"].eq("INV01").all()
+        assert assignments["assignment_status"].isin(["PASS", "WARNING"]).all()
+        assert result["inverter_summary"].iloc[0]["assigned_strings"] == len(raw)
+
+    sg125 = run("SG125CX-P2")
+    assert sg125["assignments"]["assignment_status"].eq("WARNING").any()
+    assert sg125["assignments"]["mppt_current_status"].eq("WARNING").any()
+    assert len(sg125["mppt_current_warnings"]) == 2
+
+
+def test_auto_quantity_retries_with_two_sg125_inverters_after_mppt_current_warning():
+    module = DEFAULT_MODULES.iloc[0].to_dict()
+    modules = [16, 16, 16, 16, 16, 18, 18, 16, 16, 17, 18, 18, 18, 18]
+    raw = pd.DataFrame(
+        [
+            ["AUTO", "Auto", f"G{i + 1:02d}", count, "AUTO", "TBC", 0, 0, "TBC", None, "AUTO", "AUTO"]
+            for i, count in enumerate(modules)
+        ],
+        columns=[
+            "roof_id", "zone", "group_id", "modules", "inverter_override",
+            "orientation", "tilt_deg", "azimuth_deg", "shading", "one_way_m",
+            "mppt_override", "input_override",
+        ],
+    )
+    options = recommend_inverter_options(
+        module=module, module_power_w=725, tmin_c=10, tcell_max_c=70,
+        safety_factor=0.95, max_dcac=1.4, cable_material="Copper",
+        cable_size_mm2=6, max_voltage_drop=0.015, max_dc_loss=0.015,
+        strings=raw,
+        inverter_master=DEFAULT_INVERTERS.query("inverter_id == 'SG125CX-P2'"),
+    )
+    selected = options.iloc[0]
+    assert selected["recommended_qty"] == 2
+    assert selected["assigned_strings"] == len(raw)
+    assert selected["status"] == "WARNING"  # the single 17-module string remains a design warning
+
+
+def test_manual_mppt_and_string_overrides_are_honored():
+    module = DEFAULT_MODULES.iloc[0].to_dict()
+    inverter = DEFAULT_INVERTERS.query("inverter_id == 'SG150CX'").iloc[0].to_dict()
+    raw = pd.DataFrame(
+        [
+            ["RF01", "Upper", "G01", 18, "INV01", "Portrait", 10, 180, "Low", 35, "2", "1"],
+            ["RF01", "Upper", "G02", 18, "INV01", "Portrait", 10, 180, "Low", 40, "2", "2"],
+        ],
+        columns=[
+            "roof_id", "zone", "group_id", "modules", "inverter_override",
+            "orientation", "tilt_deg", "azimuth_deg", "shading", "one_way_m",
+            "mppt_override", "input_override",
+        ],
+    )
+    result = calculate_design(
+        module=module, inverter=inverter, module_power_w=725, tmin_c=10,
+        tcell_max_c=70, safety_factor=0.95, inverter_qty=1, max_dcac=1.4,
+        cable_material="Copper", cable_size_mm2=6, max_voltage_drop=0.015,
+        max_dc_loss=0.015, strings=raw,
+    )
+    assigned = result["assignments"].set_index("group_id")
+    assert assigned.loc["G01", "mppt_no"] == 2
+    assert assigned.loc["G01", "input_no"] == 1
+    assert assigned.loc["G02", "mppt_no"] == 2
+    assert assigned.loc["G02", "input_no"] == 2

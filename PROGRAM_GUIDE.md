@@ -15,10 +15,11 @@
 |---|---|
 | `streamlit_app.py` | หน้าจอ Streamlit, รับค่า, แสดงตาราง/สถานะ และสร้างไฟล์ดาวน์โหลด |
 | `calculation_engine.py` | Calculation Engine ที่ไม่มี Streamlit: master data, สูตรไฟฟ้า, การจัด MPPT, สาย DC, QA/QC และ PVsyst export |
-| `test_calculation_engine.py` | Unit tests สำหรับค่าตั้งต้น 725 W, การคำนวณ String, แถวว่าง และการแบ่งโหลดราย Inverter |
+| `test_calculation_engine.py` | Unit tests สำหรับค่าตั้งต้น 725 W, การคำนวณ String, การแบ่งโหลดราย Inverter, MPPT/String override และกรณี 14 String ที่กระแส MPPT เกิน |
 | `requirements.txt` | Python packages ที่โปรแกรมต้องใช้ |
 | `Spec. อุปกรณ์/` | Datasheet อ้างอิงของแผงและ Inverter |
 | `README.md` | วิธีติดตั้งและเริ่มโปรแกรมฉบับย่อ |
+| `STREAMLIT_FLOW.md` | Flow การทำงาน, เงื่อนไข AUTO และสูตรหลัก |
 
 ลำดับการทำงานหลัก:
 
@@ -146,6 +147,9 @@ Master Data + Design Basis + Roof Groups
 | `tilt_deg`, `azimuth_deg` | มุมเอียงและทิศ |
 | `shading` | กลุ่มสภาพเงา |
 | `one_way_m` | ระยะสายจริงขาเดียวจาก String ถึงจุดเชื่อมต่อ |
+| `inverter_override` | กำหนด `AUTO` หรือบังคับ String ไปยัง `INV01`, `INV02`, ... |
+| `mppt_override` | กำหนด `AUTO` หรือหมายเลข MPPT ที่ต้องการ |
+| `input_override` | กำหนด `AUTO` หรือหมายเลข String/input ภายใน MPPT ที่เลือก |
 
 ตารางจะแสดงคอลัมน์คำนวณอัตโนมัติถัดจากจำนวนแผง:
 
@@ -167,6 +171,12 @@ INV03 สีเหลือง และใช้สีเดียวกับ�
 - `Assigned Inverter` แสดงเครื่องที่จัดได้จริง
 - การเลือกด้วยผู้ใช้เป็น hard constraint; หาก MPPT/Input ของเครื่องนั้นเต็มหรือ
   ไม่เข้ากัน ระบบแสดง `UNASSIGNED/FAIL` และจะไม่ย้ายไปเครื่องอื่นอัตโนมัติ
+
+คอลัมน์ `MPPT (AUTO/ระบุ)` และ `String (AUTO/ระบุ)` อยู่ท้ายตารางกรอก:
+
+- `AUTO` ให้ Engine เลือก MPPT/input ที่เหมาะสม
+- ระบุหมายเลขเพื่อบังคับ String ไปยัง MPPT และ input ที่ต้องการ
+- หาก slot ที่ระบุไม่มีอยู่จริงหรือใช้ไม่ได้ ระบบจะแสดง `FAIL/UNASSIGNED`
 
 เหนือ Candidate strings จะแสดง Total modules, Total DC kWp, จำนวน Inverter
 และ Project DC/AC ratio โดยอัตโนมัติ
@@ -190,11 +200,16 @@ String ที่ต่อขนานบน MPPT เดียวกันต้�
   โดยค่า `string_kwp` จาก Excel จะถูกคำนวณใหม่ และ `Assigned Inverter`
   จะแสดงหลัง Submit
 - เมื่อต้อง Paste หลายแถว ให้ใช้ส่วน **Paste หลายแถวจาก Excel** ซึ่งรองรับ
-  รูปแบบ 10 คอลัมน์ (input only), 11 คอลัมน์ (legacy) และ 12 คอลัมน์
-  (มี Assigned Inverter) พร้อมเลือกเพิ่มต่อท้ายหรือแทนที่ทั้งหมด
-- ตารางกรอกหลักคงลำดับ 11 คอลัมน์ให้ตรงกับ Excel เดิม และแยก
-  `Assigned Inverter` ไปแสดงในตารางผลการจัด Inverter ราย String ด้านล่าง
-  เพื่อไม่ให้คอลัมน์จาก Excel เลื่อนหรือสูญหายขณะ Paste
+  รูปแบบ 10, 11 และ 12 คอลัมน์เดิม รวมถึงรูปแบบ 12, 13 และ 14 คอลัมน์
+  ที่เติม `MPPT override` และ `String override` ต่อท้าย พร้อมเลือกเพิ่มต่อท้าย
+  หรือแทนที่ทั้งหมด
+- ตารางกรอกหลักแสดงข้อมูลหน้างานและมีคอลัมน์ override 2 ช่องท้ายตาราง:
+  `mppt_override`, `input_override` โดยค่าเริ่มต้นเป็น `AUTO`
+- `Assigned Inverter`, `MPPT`, `String` และ `MPPT total modules` เป็นผลจาก Engine
+  และแสดงในตารางผลการจัด Inverter ราย String ด้านล่าง
+- หลัง Submit หาก MPPT ใดมีกระแสรวมเกิน limit ระบบจะไฮไลท์สีแดงทั้งแถวของ
+  ทุก String ที่อยู่ใน Inverter/MPPT กลุ่มเดียวกัน เพื่อให้เห็นทั้ง String ที่ทำให้
+  เกินและ String ที่ต่อขนานอยู่เดิม
 - One-way cable เป็น Optional ในขั้น String design; หากเว้นว่าง ระบบยังคำนวณ
   kWp/MPPT ได้ แต่ส่วนตรวจสายจะแสดง Warning จนกว่าจะกรอกระยะ
 - หาก Streamlit Cloud เพิ่ง deploy source code รุ่นใหม่ ให้ Reload หน้าเพื่อล้าง widget
@@ -212,6 +227,7 @@ Azimuth (deg), Shading, One-way cable (m)`
 
 - ตารางใช้ผล `Assigned Inverter` จาก Calculation Engine เป็นหลัก
 - ไม่รวมคอลัมน์ `เลือก Inverter` ซึ่งเป็นค่าความต้องการก่อนจัดจริง
+- ตาราง Export ที่แสดงบนหน้าเว็บไฮไลท์สีแดงทั้งแถว หาก String อยู่ใน MPPT ที่มี `WARNING`
 - ไฟล์ที่ดาวน์โหลดมีการแช่หัวตาราง, ฟรีซ์แถวหัวตาราง และเปิดกรองได้
 
 ### 4.6 ตาราง Export แบบรวม 16 คอลัมน์
@@ -224,6 +240,8 @@ Assigned Inverter, Inverter model, MPPT, String, MPPT total modules`
 
 - คอลัมน์ 1–11 เป็นข้อมูลจากตารางกรอก
 - คอลัมน์ 12–16 เป็นผลจาก Calculation Engine
+- ตาราง Export ที่แสดงบนหน้าเว็บใช้สีแดงทั้งแถวเดียวกับตารางผลการจัด
+  โดยอ้างอิง Inverter/MPPT ที่มีกระแสเกิน limit
 - ใช้ปุ่ม **Export ตาราง Input + Assignment เป็น Excel (16 คอลัมน์)** เพื่อดาวน์โหลดผลรวม
 
 ## 5. การแบ่ง Design เป็นราย Inverter
@@ -237,8 +255,10 @@ Calculation Engine สร้างรหัสเครื่องเป็น 
    `G01-G12 = INV01`, `G13-G23 = INV02`
 4. ภายใน Inverter ของกลุ่มนั้น เลือก MPPT ที่มีจำนวน input ใช้น้อยที่สุด
 5. ตรวจ `inputs_per_mppt`, `max_i_mppt_a` และ `max_isc_mppt_a`
-6. ถ้าชุดที่กำหนดไม่มี slot ที่ผ่าน โปรแกรมจะลอง Inverter ชุดอื่นก่อน
-7. ถ้าไม่มี slot ที่ผ่านทุกชุด จะกำหนดเป็น `UNASSIGNED` และสถานะ `FAIL`
+6. หาก physical input ยังมีอยู่แต่กระแสรวม MPPT เกิน limit จะเก็บ assignment ไว้
+   พร้อมสถานะ `WARNING` เพื่อให้ตรวจสอบจุดจริงได้
+7. ถ้า String เป็น `AUTO` และชุดที่กำหนดไม่มี slot ที่ผ่าน โปรแกรมจะลอง Inverter ชุดอื่นก่อน
+8. ถ้าไม่มี slot ที่รองรับทุกชุด จะกำหนดเป็น `UNASSIGNED` และสถานะ `FAIL`
 
 ผลลัพธ์ `inverter_summary` แสดงรายเครื่อง:
 
@@ -319,6 +339,15 @@ Isc_MPPT <= max_isc_mppt_a
 จำนวน String ขนาน <= inputs_per_mppt
 ```
 
+หาก physical input ยังรองรับ String แต่ยอด `Imp_MPPT` หรือ `Isc_MPPT` เกินค่าจำกัด
+Engine จะไม่ลบ assignment ออก แต่กำหนด `assignment_status = WARNING` และ
+`mppt_current_status = WARNING` ให้กับจุดที่เกิน เพื่อให้ผู้ใช้เห็น Inverter/MPPT
+และ String ที่เกี่ยวข้องสำหรับแก้ไข
+
+หน้า 1 จะไฮไลท์สีแดงทั้งแถวของทุก String ที่อยู่ใน Inverter/MPPT เดียวกับจุดที่เกิน
+โดยใช้สีเดียวกันในตารางผลการจัด, ตาราง **Export Excel — String / MPPT** และตาราง
+**Export Excel — Input + Assignment (16 คอลัมน์)**
+
 ### 6.6 DC/AC ratio
 
 ระดับโครงการ:
@@ -394,6 +423,22 @@ AUTO  Auto  G01  20  14.5  AUTO  TBC  0  0  TBC
 `Roof ID | Zone | Group ID | Modules | DC (kWp) | เลือก Inverter | Orientation | Tilt | Azimuth | Shading`
 
 ค่า `DC (kWp)` ใช้แสดงผลประกอบการ Paste และระบบจะคำนวณค่าใหม่จากจำนวนแผงกับกำลังแผงเมื่อกดบันทึก/คำนวณ ส่วน `One-way cable` เป็น Optional และสามารถกรอกภายหลังได้
+
+### รูปแบบ Paste ที่เติม MPPT และ String override
+
+สามารถเติม 2 คอลัมน์ท้ายจากตัวอย่างเดิมได้ดังนี้:
+
+```text
+AUTO  Auto  G01  20  14.5  AUTO  TBC  0  0  TBC  AUTO  AUTO
+AUTO  Auto  G02  20  14.5  INV01 TBC  0  0  TBC  6     1
+```
+
+ลำดับ 2 คอลัมน์ท้ายคือ:
+
+`MPPT override | String override`
+
+ใช้ `AUTO` เพื่อให้ระบบจัดให้อัตโนมัติ หรือระบุหมายเลขเพื่อบังคับช่องที่ต้องการ
+ทั้งสองค่าจะถูกนำไปตรวจสอบกับจำนวน MPPT และจำนวน input ต่อ MPPT ของ Inverter ที่เลือก
 
 ก่อนนำผลไปใช้งานจริง ต้องตรวจอย่างน้อย:
 

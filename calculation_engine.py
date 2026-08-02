@@ -33,6 +33,19 @@ def _status(*conditions: bool) -> str:
 
 STRING_MODULE_STEP = 2
 MAX_STRING_MODULE_DIFFERENCE = 2
+ASSIGNED_STATUSES = frozenset({"PASS", "WARNING"})
+
+
+def _assigned_mask(assignments: pd.DataFrame) -> pd.Series:
+    """Return rows that have a physical MPPT/input assignment.
+
+    A physical assignment can still carry a WARNING when the available
+    connector is used but the aggregate MPPT current needs engineering review.
+    Such a row must not be treated as UNASSIGNED or dropped from summaries.
+    """
+    if assignments.empty:
+        return pd.Series(dtype=bool, index=assignments.index)
+    return assignments["assignment_status"].isin(ASSIGNED_STATUSES)
 
 
 def calculate_string_limits(
@@ -272,7 +285,7 @@ def recommend_inverter_options(
                 break
             assignment_pass = (
                 not last_design["assignments"].empty
-                and (last_design["assignments"]["assignment_status"] == "PASS").all()
+                and last_design["assignments"]["assignment_status"].eq("PASS").all()
             )
             ratio = last_design.get("actual_dcac_ratio")
             ratio_pass = ratio is not None and ratio <= max_dcac
@@ -288,7 +301,7 @@ def recommend_inverter_options(
                 not candidate_strings.empty
                 and candidate_strings["electrical_status"].isin(["PASS", "WARNING"]).all()
             )
-            assigned = int((assignments.get("assignment_status") == "PASS").sum()) if not assignments.empty and string_pass else 0
+            assigned = int(_assigned_mask(assignments).sum()) if not assignments.empty and string_pass else 0
             total_inputs = int(inverter["mppt_qty"]) * int(inverter["inputs_per_mppt"]) * int(attempted_quantity)
             unassigned = max(0, total_inputs - assigned) if total_inputs else None
             warnings = (last_design or {}).get("input_warnings", [])
@@ -314,8 +327,12 @@ def recommend_inverter_options(
 
         assignments = best["assignments"]
         total_inputs = int(inverter["mppt_qty"]) * int(inverter["inputs_per_mppt"]) * int(quantity)
-        assigned = int(len(assignments))
+        assigned = int(_assigned_mask(assignments).sum())
         has_string_warning = best["strings"]["electrical_status"].eq("WARNING").any()
+        has_assignment_warning = (
+            not assignments.empty
+            and assignments["assignment_status"].eq("WARNING").any()
+        )
         rows.append({
             "inverter_id": inverter.get("inverter_id"),
             "inverter_model": inverter.get("model"),
@@ -326,8 +343,10 @@ def recommend_inverter_options(
             "used_mppt": int(assignments["mppt_no"].nunique()),
             "total_mppt": int(inverter["mppt_qty"]),
             "total_inputs": total_inputs,
-            "status": "WARNING" if has_string_warning else "PASS",
+            "status": "WARNING" if has_string_warning or has_assignment_warning else "PASS",
             "comment": (
+                "String ถูกจัดลงช่อง Inverter ได้ครบ แต่มี MPPT ที่กระแสรวมเกินค่ากำหนด ต้องทบทวนการขนาน String / datasheet"
+                if has_assignment_warning else
                 "คำนวณต่อได้ แต่มีเศษเหลือ 1 String เป็นเลขคี่; "
                 "จัด MPPT ได้ครบและ String อื่นต่างกันไม่เกิน 2 แผง"
                 if has_string_warning else
@@ -387,6 +406,7 @@ def calculate_design(*, module: dict[str, Any], inverter: dict[str, Any], module
                     pd.DataFrame(), inverter, inverter_qty, max_dcac
                 ), "cables": pd.DataFrame(), "critical_missing": False,
                 "max_dcac": max_dcac, "input_warnings": input_warnings,
+                "mppt_current_warnings": [],
                 "string_constraints": string_constraints}
 
     module_counts = working["modules"].astype(int)
@@ -457,6 +477,23 @@ def calculate_design(*, module: dict[str, Any], inverter: dict[str, Any], module
                      "voc_cold_v":v_cold,"vmp_hot_v":v_hot,"vmp_stc_v":v_stc,"imp_a":module["imp_a"],"isc_a":module["isc_a"],"electrical_status":status,"comment":comment})
     out = pd.DataFrame(rows)
     assignments = _assign_mppt(out, inverter, inverter_qty)
+    mppt_current_warnings = []
+    if not assignments.empty:
+        warning_assignments = assignments[
+            assignments["assignment_status"].eq("WARNING")
+        ].drop_duplicates(["inverter_id", "mppt_no"])
+        for _, warning_row in warning_assignments.iterrows():
+            mppt_current_warnings.append(
+                f"{warning_row['inverter_id']}-MPPT{int(warning_row['mppt_no']):02d}: "
+                f"Imp {float(warning_row['mppt_imp_a']):.2f} A / "
+                f"Isc {float(warning_row['mppt_isc_a']):.2f} A"
+            )
+        if mppt_current_warnings:
+            input_warnings.append(
+                "WARNING: พบ "
+                f"{len(mppt_current_warnings)} ช่อง MPPT ที่กระแสรวมเกินข้อจำกัด — "
+                + ", ".join(mppt_current_warnings)
+            )
     inverter_summary = _summarize_inverters(assignments, inverter, inverter_qty, max_dcac)
     cables = _cables(assignments, cable_material, cable_size_mm2, max_voltage_drop, max_dc_loss)
     total_dc_kwp = float(out["string_kwp"].sum())
@@ -464,6 +501,7 @@ def calculate_design(*, module: dict[str, Any], inverter: dict[str, Any], module
     return {"limits": limits, "strings": out, "assignments": assignments,
             "inverter_summary": inverter_summary, "cables": cables,
             "critical_missing": False, "max_dcac": max_dcac, "input_warnings": input_warnings,
+            "mppt_current_warnings": mppt_current_warnings,
             "string_constraints": string_constraints,
             "total_dc_kwp": total_dc_kwp, "total_ac_kw": total_ac_kw,
             "actual_dcac_ratio": total_dc_kwp / total_ac_kw if total_ac_kw else None}
@@ -499,26 +537,57 @@ def _assign_mppt(strings: pd.DataFrame, inverter: dict[str, Any], inverter_qty: 
                 math.floor(position * inverter_qty / total_strings) + 1,
             )
             preferred_inverter_id = f"INV{preferred_inv_no:02d}"
+        def slot_override_number(value: object) -> int | None:
+            if pd.isna(value) or not str(value).strip() or str(value).strip().upper() == "AUTO":
+                return None
+            try:
+                number = float(str(value).strip())
+            except (TypeError, ValueError):
+                return -1
+            return int(number) if number.is_integer() and number > 0 else -1
+
+        mppt_override = slot_override_number(string.get("mppt_override", "AUTO"))
+        input_override = slot_override_number(string.get("input_override", "AUTO"))
+        invalid_slot_override = mppt_override == -1 or input_override == -1
+        manual_slot_assignment = mppt_override is not None or input_override is not None
         valid = []
+        physical_valid = []
         for slot in slots:
             items = slot["items"]
             same = not items or all(x["modules"] == string.modules and x["orientation"] == string.orientation and x["shading"] == string.shading for x in items)
             current_ok = (len(items)+1)*string.imp_a <= inverter["max_i_mppt_a"] and (len(items)+1)*string.isc_a <= inverter["max_isc_mppt_a"]
-            if same and len(items) < inverter["inputs_per_mppt"] and current_ok: valid.append(slot)
+            if same and len(items) < inverter["inputs_per_mppt"]:
+                physical_valid.append(slot)
+                if current_ok:
+                    valid.append(slot)
+        if invalid_slot_override:
+            valid = []
+            physical_valid = []
+        else:
+            if mppt_override is not None:
+                valid = [slot for slot in valid if slot["mppt_no"] == mppt_override]
+                physical_valid = [slot for slot in physical_valid if slot["mppt_no"] == mppt_override]
+            if input_override is not None:
+                valid = [slot for slot in valid if len(slot["items"]) + 1 == input_override]
+                physical_valid = [slot for slot in physical_valid if len(slot["items"]) + 1 == input_override]
         preferred_slots = [
             slot for slot in valid
+            if slot["inverter_id"] == preferred_inverter_id
+        ]
+        preferred_physical_slots = [
+            slot for slot in physical_valid
             if slot["inverter_id"] == preferred_inverter_id
         ]
         if manual_assignment:
             # A manual choice is a hard constraint: never silently move the
             # string to another physical inverter.
             candidate_slots = (
-                preferred_slots
+                preferred_slots or preferred_physical_slots
                 if preferred_inverter_id in valid_inverter_ids
                 else []
             )
         else:
-            candidate_slots = preferred_slots or valid
+            candidate_slots = preferred_slots or valid or preferred_physical_slots or physical_valid
         slot = min(
             candidate_slots,
             key=lambda x: (
@@ -529,30 +598,52 @@ def _assign_mppt(strings: pd.DataFrame, inverter: dict[str, Any], inverter_qty: 
             ),
         ) if candidate_slots else None
         if slot is None:
-            if manual_assignment and preferred_inverter_id not in valid_inverter_ids:
+            if invalid_slot_override:
+                comment = "MPPT/String override must be AUTO or a positive integer"
+            elif manual_assignment and preferred_inverter_id not in valid_inverter_ids:
                 comment = f"เลือก {preferred_inverter_id} แต่ไม่มี Inverter ชุดนี้ในโครงการ"
-            elif manual_assignment:
+            elif manual_assignment or manual_slot_assignment:
                 comment = f"{preferred_inverter_id} ไม่มี MPPT/Input ที่เข้ากันหรือช่องเต็ม"
             else:
                 comment = "ไม่มี MPPT ที่เข้ากัน: เพิ่ม inverter/MPPT หรืออย่าขนาน string ต่างจำนวน/ทิศ/เงา"
             rows.append({**string.to_dict(),"inverter_id":"UNASSIGNED",
-                         "assignment_mode":"MANUAL" if manual_assignment else "AUTO",
+                          "assignment_mode":"MANUAL" if manual_assignment or manual_slot_assignment else "AUTO",
                          "mppt_no":None,"input_no":None,
+                         "mppt_imp_a":None,"mppt_isc_a":None,
+                         "mppt_current_status":"FAIL",
                          "assignment_status":"FAIL","comment":comment})
         else:
             slot["items"].append(string)
+            mppt_imp_a = sum(float(item.imp_a) for item in slot["items"])
+            mppt_isc_a = sum(float(item.isc_a) for item in slot["items"])
+            mppt_current_ok = (
+                mppt_imp_a <= float(inverter["max_i_mppt_a"])
+                and mppt_isc_a <= float(inverter["max_isc_mppt_a"])
+            )
             rows.append({**string.to_dict(),"inverter_id":slot["inverter_id"],
-                         "assignment_mode":"MANUAL" if manual_assignment else "AUTO",
+                         "assignment_mode":"MANUAL" if manual_assignment or manual_slot_assignment else "AUTO",
                          "mppt_no":slot["mppt_no"],"input_no":len(slot["items"]),
-                         "assignment_status":"PASS",
+                         "mppt_imp_a":mppt_imp_a,"mppt_isc_a":mppt_isc_a,
+                         "mppt_current_status":"PASS" if mppt_current_ok else "WARNING",
+                         "assignment_status":"PASS" if mppt_current_ok else "WARNING",
                          "comment":"เลือก Inverter โดยผู้ใช้และจัด MPPT สำเร็จ" if manual_assignment else "จัดบน MPPT ที่มีจำนวนแผง/ทิศ/เงาเดียวกัน"})
     out = pd.DataFrame(rows)
     if out.empty:
         return out
+    warning_mask = out["assignment_status"].eq("WARNING")
+    out.loc[warning_mask, "comment"] = out.loc[warning_mask].apply(
+        lambda row: (
+            f"Physical input assigned; MPPT current = {float(row['mppt_imp_a']):.2f} A / "
+            f"{float(row['mppt_isc_a']):.2f} A, limit = "
+            f"{float(inverter['max_i_mppt_a']):.2f} A / "
+            f"{float(inverter['max_isc_mppt_a']):.2f} A. Verify datasheet or revise parallel Strings."
+        ),
+        axis=1,
+    )
     out["mppt_modules_per_string"] = pd.NA
     out["mppt_string_count"] = pd.NA
     out["mppt_total_modules"] = pd.NA
-    passed = out[out["assignment_status"] == "PASS"]
+    passed = out[_assigned_mask(out)]
     for (inverter_id, mppt_no), group in passed.groupby(
         ["inverter_id", "mppt_no"], sort=False
     ):
@@ -578,14 +669,20 @@ def _summarize_inverters(assignments: pd.DataFrame, inverter: dict[str, Any],
         else:
             assigned = assignments[
                 (assignments["inverter_id"] == inverter_id)
-                & (assignments["assignment_status"] == "PASS")
+                & assignments["assignment_status"].isin(ASSIGNED_STATUSES)
             ]
         dc_kwp = float(pd.to_numeric(assigned.get("string_kwp"), errors="coerce").fillna(0).sum()) if not assigned.empty else 0.0
         ratio = dc_kwp / rated_ac_kw if rated_ac_kw else None
+        assignment_warning = (
+            not assigned.empty
+            and assigned["assignment_status"].eq("WARNING").any()
+        )
         if not dc_kwp:
             status, comment = "WARNING", "ยังไม่มี String จัดเข้าชุด Inverter นี้"
         elif ratio > max_dcac:
             status, comment = "FAIL", "DC/AC ratio ของชุดสูงกว่าเกณฑ์ที่กำหนด"
+        elif assignment_warning:
+            status, comment = "WARNING", "Physical inputs are assigned, but one or more MPPT current totals need datasheet review"
         elif ratio < 0.80:
             status, comment = "WARNING", "DC/AC ratio ของชุดต่ำกว่า 0.80"
         else:
@@ -688,12 +785,19 @@ def qa_summary(design: dict[str, Any], module: dict[str, Any], inverter: dict[st
         if strings.empty or strings["electrical_status"].isin(["PASS", "WARNING"]).all()
         else "FAIL"
     )
+    assignment_allocation_result = (
+        "PASS"
+        if assignments.empty or _assigned_mask(assignments).all()
+        else "FAIL"
+    )
+    if assignment_allocation_result == "PASS" and not assignments.empty and assignments["assignment_status"].eq("WARNING").any():
+        assignment_allocation_result = "WARNING"
     rows = [
         ["QA-01","Module suffix provided","Critical","PASS" if suffix.strip() else "FAIL","Module","Enter verified full suffix","No"],
         ["QA-02","Equipment revision verified","Critical","PASS" if module["verification_status"] == "Verified" and inverter["verification_status"] == "Verified" else "FAIL","Master data","Verify datasheet revision / market","No"],
         ["QA-03","String module count is even and balanced or has one odd remainder","Warning" if single_odd_allowed else "Critical",string_criteria_result,"String Designer","Use Auto-layout; if total is odd, keep only one odd remainder String","No"],
         ["QA-04","All candidate strings voltage valid","Critical",string_electrical_result,"String Designer","Review string length / voltage window","No"],
-        ["QA-05","All strings assigned to compatible MPPT","Critical","PASS" if (assignments.assignment_status == "PASS").all() else "FAIL","MPPT Assignment","Add inverter/MPPT or revise groups","No"],
+        ["QA-05","All strings assigned to physical MPPT/input","Critical",assignment_allocation_result,"MPPT Assignment","Review MPPT current warning or add inverter/MPPT if any String remains unassigned","No"],
         ["QA-06","DC cable voltage drop and loss","Warning","PASS" if (cables.cable_status == "PASS").all() else "WARNING","DC Cable","Increase cable size or reduce route length","No"],
         ["QA-07","PAN and OND files supplied","Warning","PASS" if module["pan_file"] != "REQUIRES VERIFICATION" and inverter["ond_file"] != "REQUIRES VERIFICATION" else "WARNING","PVsyst","Add verified PAN / OND files","No"],
     ]
@@ -702,7 +806,7 @@ def qa_summary(design: dict[str, Any], module: dict[str, Any], inverter: dict[st
 
 def make_pvsyst_export(project: str, module: dict[str, Any], inverter: dict[str, Any], design: dict[str, Any]) -> pd.DataFrame:
     assignments, cables = design["assignments"], design["cables"]
-    strings = assignments[assignments["assignment_status"] == "PASS"].copy()
+    strings = assignments[assignments["assignment_status"].isin(ASSIGNED_STATUSES)].copy()
     if strings.empty: return pd.DataFrame()
     merged = strings.merge(
         cables[["string_id","inverter_id","loop_m","resistance_ohm","power_loss_pct"]],

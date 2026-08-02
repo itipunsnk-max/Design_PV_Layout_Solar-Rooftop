@@ -87,7 +87,7 @@ div[data-testid="stDataFrame"] [role="columnheader"] {
 
 ROOF_COLUMNS = [
     "roof_id", "zone", "group_id", "modules", "inverter_override", "orientation",
-    "tilt_deg", "azimuth_deg", "shading", "one_way_m",
+    "tilt_deg", "azimuth_deg", "shading", "one_way_m", "mppt_override", "input_override",
 ]
 INVERTER_COLORS = [
     ("#dbeafe", "#1e3a8a"),  # blue
@@ -123,12 +123,12 @@ def inverter_cell_style(value: object) -> str:
 def default_roof_groups() -> pd.DataFrame:
     """Return a new frame so sessions never share or mutate the same object."""
     return pd.DataFrame([
-        ["RF01", "Upper", "G01", 18, "AUTO", "Portrait", 10, 180, "Low", 35],
-        ["RF01", "Upper", "G02", 18, "AUTO", "Portrait", 10, 180, "Low", 40],
-        ["RF01", "Upper", "G03", 18, "AUTO", "Portrait", 10, 180, "Low", 45],
-        ["RF02", "Lower", "G04", 16, "AUTO", "Portrait", 10, 180, "Low", 55],
-        ["RF02", "Lower", "G05", 16, "AUTO", "Portrait", 10, 180, "Low", 60],
-        ["RF02", "Lower", "G06", 16, "AUTO", "Portrait", 10, 180, "Low", 65],
+         ["RF01", "Upper", "G01", 18, "AUTO", "Portrait", 10, 180, "Low", 35, "AUTO", "AUTO"],
+         ["RF01", "Upper", "G02", 18, "AUTO", "Portrait", 10, 180, "Low", 40, "AUTO", "AUTO"],
+         ["RF01", "Upper", "G03", 18, "AUTO", "Portrait", 10, 180, "Low", 45, "AUTO", "AUTO"],
+         ["RF02", "Lower", "G04", 16, "AUTO", "Portrait", 10, 180, "Low", 55, "AUTO", "AUTO"],
+         ["RF02", "Lower", "G05", 16, "AUTO", "Portrait", 10, 180, "Low", 60, "AUTO", "AUTO"],
+         ["RF02", "Lower", "G06", 16, "AUTO", "Portrait", 10, 180, "Low", 65, "AUTO", "AUTO"],
     ], columns=ROOF_COLUMNS)
 
 
@@ -145,8 +145,22 @@ def _is_numeric_token(value: object) -> bool:
         return False
 
 
-def parse_excel_clipboard(text: str) -> pd.DataFrame:
-    """Parse Excel rows with optional calculated kWp and optional one-way cable."""
+def _normalise_slot_token(value: object) -> str:
+    """Keep imported MPPT/input overrides in a stable AUTO or integer form."""
+    text = "" if value is None else str(value).strip()
+    if not text or text.upper() == "AUTO":
+        return "AUTO"
+    try:
+        number = float(text.replace(",", ""))
+        if number.is_integer() and number > 0:
+            return str(int(number))
+    except (TypeError, ValueError):
+        pass
+    return text.upper()
+
+
+def _parse_excel_clipboard_legacy(text: str) -> pd.DataFrame:
+    """Legacy parser retained for reference; use parse_excel_clipboard below."""
     rows = [
         (
             [cell.strip() for cell in line.split("\t")]
@@ -205,6 +219,92 @@ def parse_excel_clipboard(text: str) -> pd.DataFrame:
         parsed_rows.append([
             values[0], values[1], values[2], modules, inverter_value,
             values[5], tilt, azimuth, values[8], one_way,
+        ])
+    legacy_frame = pd.DataFrame(parsed_rows, columns=ROOF_COLUMNS[:10])
+    legacy_frame["mppt_override"] = "AUTO"
+    legacy_frame["input_override"] = "AUTO"
+    return legacy_frame.reindex(columns=ROOF_COLUMNS)
+
+
+def parse_excel_clipboard(text: str) -> pd.DataFrame:
+    """Parse legacy input plus optional MPPT and String overrides.
+
+    The last two columns in the new input format are MPPT and String.  Both
+    accept AUTO or a positive integer. Existing 10/11/12-column clipboard
+    formats remain supported for backward compatibility.
+    """
+    rows = [
+        ([cell.strip() for cell in line.split("\t")]
+         if "\t" in line else [cell.strip() for cell in re.split(r"\s{2,}", line.strip())])
+        for line in text.splitlines()
+        if line.strip()
+    ]
+    if not rows:
+        raise ValueError("ยังไม่มีข้อมูลที่ Paste")
+    first_cell = rows[0][0].strip().lower().replace(" ", "_")
+    if first_cell in {"roof_id", "roofid"}:
+        rows = rows[1:]
+    if not rows:
+        raise ValueError("พบเฉพาะหัวตาราง แต่ไม่มีแถวข้อมูล")
+
+    parsed_rows = []
+    for row_number, row in enumerate(rows, start=1):
+        mppt_override, input_override = "AUTO", "AUTO"
+        if len(row) == 10:
+            if _is_inverter_token(row[4]):
+                values = [*row, "AUTO", "AUTO"]
+            elif _is_numeric_token(row[4]) and _is_inverter_token(row[5]):
+                values = [row[0], row[1], row[2], row[3], row[5],
+                          row[6], row[7], row[8], row[9], None, "AUTO", "AUTO"]
+            else:
+                values = [*row, "AUTO", "AUTO"]
+        elif len(row) == 11:
+            # Legacy display: calculated kWp is at index 4.
+            values = [row[0], row[1], row[2], row[3], row[5],
+                      row[6], row[7], row[8], row[9], row[10], "AUTO", "AUTO"]
+        elif len(row) == 12:
+            if _is_inverter_token(row[4]):
+                # New input-only: the final two columns are MPPT and String.
+                values = [row[0], row[1], row[2], row[3], row[4],
+                          row[5], row[6], row[7], row[8], row[9], row[10], row[11]]
+            elif _is_numeric_token(row[4]) and _is_inverter_token(row[5]) and not _is_inverter_token(row[6]):
+                # Compact legacy with calculated kWp and the final two overrides.
+                values = [row[0], row[1], row[2], row[3], row[5],
+                          row[6], row[7], row[8], row[9], None, row[10], row[11]]
+            else:
+                # Current display: calculated kWp + selected and assigned Inverter.
+                values = [row[0], row[1], row[2], row[3], row[5],
+                          row[7], row[8], row[9], row[10], row[11], "AUTO", "AUTO"]
+        elif len(row) == 13:
+            # Legacy display plus MPPT and String overrides.
+            values = [row[0], row[1], row[2], row[3], row[5],
+                      row[6], row[7], row[8], row[9], row[10], row[11], row[12]]
+        elif len(row) == 14:
+            # Current display plus MPPT and String overrides.
+            values = [row[0], row[1], row[2], row[3], row[5],
+                      row[7], row[8], row[9], row[10], row[11], row[12], row[13]]
+        else:
+            raise ValueError(
+                f"แถว {row_number} มี {len(row)} คอลัมน์ "
+                "(รองรับ 10, 11, 12, 13 หรือ 14 คอลัมน์)"
+            )
+        try:
+            modules = int(float(str(values[3]).replace(",", "")))
+            tilt = float(str(values[6]).replace(",", "")) if values[6] else None
+            azimuth = float(str(values[7]).replace(",", "")) if values[7] else None
+            one_way = float(str(values[9]).replace(",", "")) if values[9] else None
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"แถว {row_number} มีค่าตัวเลขไม่ถูกต้อง") from error
+        inverter_value = str(values[4]).upper() if values[4] else "AUTO"
+        match = re.fullmatch(r"INV0*(\d+)", inverter_value)
+        if match:
+            inverter_value = f"INV{int(match.group(1)):02d}"
+        mppt_override = _normalise_slot_token(values[10])
+        input_override = _normalise_slot_token(values[11])
+        parsed_rows.append([
+            values[0], values[1], values[2], modules, inverter_value,
+            values[5], tilt, azimuth, values[8], one_way,
+            mppt_override, input_override,
         ])
     return pd.DataFrame(parsed_rows, columns=ROOF_COLUMNS)
 
@@ -265,6 +365,28 @@ def assignment_row_style(row: pd.Series) -> list[str]:
             "border:2px solid #64748b;"
         )
     return styles
+
+
+def assignment_warning_row_style(row: pd.Series) -> list[str]:
+    """Make MPPT-current warning rows unmistakable in the assignment table."""
+    if str(row.get("MPPT current", "")).upper() != "WARNING":
+        return ["" for _ in row.index]
+    return [
+        "background-color:#fecaca;color:#991b1b;font-weight:800;"
+        "border-top:2px solid #dc2626;border-bottom:2px solid #dc2626;"
+        for _ in row.index
+    ]
+
+
+def warning_index_row_style(row: pd.Series, warning_rows: set[int]) -> list[str]:
+    """Apply the same red highlight to export rows by source-row index."""
+    if row.name not in warning_rows:
+        return ["" for _ in row.index]
+    return [
+        "background-color:#fecaca;color:#991b1b;font-weight:800;"
+        "border-top:2px solid #dc2626;border-bottom:2px solid #dc2626;"
+        for _ in row.index
+    ]
 
 
 def make_string_export_frame(candidate_frame: pd.DataFrame) -> pd.DataFrame:
@@ -379,6 +501,9 @@ def display(frame: pd.DataFrame, status_columns: list[str]) -> None:
         "mppt_modules_per_string": "Modules/String in MPPT",
         "mppt_string_count": "Strings/MPPT",
         "mppt_total_modules": "MPPT total modules",
+        "mppt_imp_a": "MPPT Imp (A)",
+        "mppt_isc_a": "MPPT Isc (A)",
+        "mppt_current_status": "MPPT current status",
     })
     styler = display_frame.style
     kwp_columns = [
@@ -391,8 +516,11 @@ def display(frame: pd.DataFrame, status_columns: list[str]) -> None:
             na_rep="-",
         )
     for col in status_columns:
-        if col in display_frame.columns:
-            styler = styler.map(status_style, subset=[col])
+        display_col = {
+            "mppt_current_status": "MPPT current status",
+        }.get(col, col)
+        if display_col in display_frame.columns:
+            styler = styler.map(status_style, subset=[display_col])
     st.dataframe(styler, use_container_width=True, hide_index=True)
 
 
@@ -403,7 +531,9 @@ def totals_bar(strings: pd.DataFrame, title: str = "สรุปรวม", tota
     total_modules = int(pd.to_numeric(strings.get("modules"), errors="coerce").fillna(0).sum())
     total_strings = int(strings["string_id"].nunique()) if "string_id" in strings else len(strings)
     total_kwp = pd.to_numeric(strings.get("string_kwp"), errors="coerce").fillna(0).sum()
-    passed = int((strings.get("electrical_status", pd.Series(dtype=str)) == "PASS").sum())
+    electrical_pass = strings.get("electrical_status", pd.Series(dtype=str)).eq("PASS")
+    assignment_pass = strings.get("assignment_status", pd.Series(dtype=str)).eq("PASS")
+    passed = int((electrical_pass & assignment_pass).sum()) if "assignment_status" in strings else int(electrical_pass.sum())
     st.caption(title)
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Total modules", f"{total_modules:,}")
@@ -444,6 +574,10 @@ def init_state() -> None:
         migrated_roof_groups["inverter_override"] = (
             migrated_roof_groups["inverter_override"].fillna("AUTO")
         )
+        for override_column in ("mppt_override", "input_override"):
+            migrated_roof_groups[override_column] = (
+                migrated_roof_groups[override_column].fillna("AUTO")
+            )
         st.session_state.roof_groups = migrated_roof_groups
     if "roof_editor_revision" not in st.session_state:
         st.session_state.roof_editor_revision = 0
@@ -643,7 +777,7 @@ with tab1:
     inverter_options = [
         "AUTO", *[f"INV{number:02d}" for number in range(1, inverter_qty_input + 1)]
     ]
-    with st.expander("📋 Paste หลายแถวจาก Excel (รองรับ 10/11/12 คอลัมน์)"):
+    with st.expander("📋 Paste หลายแถวจาก Excel (รองรับ 10/11/12/13/14 คอลัมน์)"):
         with st.form("excel_clipboard_form", clear_on_submit=False):
             st.caption(
                 "รองรับ 3 รูปแบบ: 10 คอลัมน์ input-only, 10 คอลัมน์แบบมี DC (kWp) "
@@ -651,11 +785,12 @@ with tab1:
                 "โดยรูปแบบ 10 คอลัมน์แบบมี DC ใช้ลำดับ: Roof ID, Zone, Group ID, "
                 "Modules, DC (kWp), เลือก Inverter, Orientation, Tilt, Azimuth, Shading"
             )
+            st.caption("รูปแบบใหม่รองรับ MPPT และ String ต่อท้ายข้อมูล โดยกรอก AUTO หรือเลขช่องที่ต้องการ")
             clipboard_text = st.text_area(
                 "วางข้อมูลจาก Excel ที่นี่",
                 key="excel_clipboard_text",
                 height=150,
-                placeholder="AUTO  Auto  G01  20  14.5  AUTO  TBC  0  0  TBC",
+                placeholder="AUTO  Auto  G01  20  14.5  AUTO  TBC  0  0  TBC  AUTO  AUTO",
             )
             paste_mode = st.radio(
                 "วิธีนำเข้า",
@@ -716,6 +851,9 @@ with tab1:
     mppt_by_row = {}
     input_by_row = {}
     mppt_total_modules_by_row = {}
+    assignment_status_by_row = {}
+    mppt_current_status_by_row = {}
+    mppt_current_warning_keys = set()
     if not candidate_preview_design["assignments"].empty:
         assignment_lookup = candidate_preview_design["assignments"].drop_duplicates(
             "source_row"
@@ -734,6 +872,28 @@ with tab1:
         mppt_total_modules_by_row = assignment_lookup[
             "mppt_total_modules"
         ].to_dict()
+        assignment_status_by_row = assignment_lookup[
+            "assignment_status"
+        ].to_dict()
+        mppt_current_status_by_row = (
+            assignment_lookup["mppt_current_status"].to_dict()
+            if "mppt_current_status" in assignment_lookup.columns
+            else {}
+        )
+        mppt_current_warning_keys = {
+            (str(inverter_by_row.get(row_no, "")), str(mppt_by_row.get(row_no, "")))
+            for row_no, status in mppt_current_status_by_row.items()
+            if str(status).upper() == "WARNING"
+        }
+    current_warning_rows = {
+        row_no
+        for row_no in candidate_editor_frame.index
+        if (
+            str(inverter_by_row.get(row_no, "")),
+            str(mppt_by_row.get(row_no, "")),
+        ) in mppt_current_warning_keys
+        or str(assignment_status_by_row.get(row_no, "")).upper() == "WARNING"
+    }
     invalid_overrides = ~candidate_editor_frame["inverter_override"].astype(str).isin(
         inverter_options
     )
@@ -814,6 +974,13 @@ with tab1:
         + "</div>",
         unsafe_allow_html=True,
     )
+    if candidate_preview_design.get("mppt_current_warnings"):
+        st.error(
+            "WARNING: พบช่อง MPPT ที่กระแสรวมเกินข้อจำกัด: "
+            + ", ".join(candidate_preview_design["mppt_current_warnings"])
+            + " — ตรวจ datasheet หรือปรับ MPPT/String override ก่อนใช้งาน"
+        )
+        st.caption("แถวที่มีสถานะ WARNING จะแสดงเป็นพื้นสีแดงในตารางผลลัพธ์ด้านล่าง")
 
     # A design-dependent key forces calculated kWp/INV columns to refresh when
     # the module, inverter model, module power or inverter quantity is changed.
@@ -893,6 +1060,20 @@ with tab1:
                     width="medium",
                     help="เว้นว่างได้ โปรแกรมจะคำนวณ String ก่อนและแจ้งเตือนส่วนสาย DC",
                 ),
+                "mppt_override": st.column_config.SelectboxColumn(
+                    "MPPT\n(AUTO/ระบุ)",
+                    options=["AUTO", *[str(i) for i in range(1, int(inverter["mppt_qty"]) + 1)]],
+                    required=True,
+                    width="small",
+                    help="AUTO = ให้ระบบจัด MPPT; ระบุเลขเพื่อบังคับ String นี้ไปยัง MPPT ที่เลือก",
+                ),
+                "input_override": st.column_config.SelectboxColumn(
+                    "String\n(AUTO/ระบุ)",
+                    options=["AUTO", *[str(i) for i in range(1, int(inverter["inputs_per_mppt"]) + 1)]],
+                    required=True,
+                    width="small",
+                    help="AUTO = ให้ระบบเลือกช่อง String; ระบุเลขเพื่อบังคับ input ลำดับที่เลือกภายใน MPPT",
+                ),
             })
         roof_submitted_bottom = st.form_submit_button(
             "✅ บันทึกข้อมูลและคำนวณใหม่",
@@ -928,11 +1109,20 @@ with tab1:
         "input_no": "String",
         "mppt_total_modules": "MPPT total modules",
     })
+    assignment_preview["MPPT current"] = [
+        (
+            "WARNING"
+            if row_no in current_warning_rows
+            else str(assignment_status_by_row.get(row_no, "-"))
+        )
+        for row_no in assignment_preview.index
+    ]
     assignment_preview_styler = (
         assignment_preview.style
         .format({"DC (kWp)": "{:,.3f}"}, na_rep="-")
         .apply(assignment_row_style, axis=1)
         .map(inverter_cell_style, subset=["Assigned Inverter"])
+        .apply(assignment_warning_row_style, axis=1)
     )
     st.dataframe(
         assignment_preview_styler,
@@ -949,6 +1139,7 @@ with tab1:
             "MPPT": st.column_config.NumberColumn(width="small"),
             "String": st.column_config.NumberColumn(width="small"),
             "MPPT total modules": st.column_config.NumberColumn(width="small"),
+            "MPPT current": st.column_config.TextColumn(width="small"),
         },
     )
 
@@ -964,6 +1155,10 @@ with tab1:
         .format({"DC (kWp)": "{:,.3f}"}, na_rep="-")
         .apply(assignment_row_style, axis=1)
         .map(inverter_cell_style, subset=["Assigned Inverter"])
+        .apply(
+            lambda row: warning_index_row_style(row, current_warning_rows),
+            axis=1,
+        )
     )
     st.dataframe(string_export_styler, width="stretch", hide_index=True)
     st.download_button(
@@ -985,6 +1180,10 @@ with tab1:
         .format({"DC (kWp)": "{:,.3f}"}, na_rep="-")
         .apply(assignment_row_style, axis=1)
         .map(inverter_cell_style, subset=["Assigned Inverter"])
+        .apply(
+            lambda row: warning_index_row_style(row, current_warning_rows),
+            axis=1,
+        )
     )
     st.dataframe(input_assignment_export_styler, width="stretch", hide_index=True)
     st.download_button(
@@ -1000,6 +1199,8 @@ design = calculate_design(module=module, inverter=inverter, module_power_w=modul
                           max_dcac=max_dcac, cable_material=cable_material, cable_size_mm2=cable_size,
                           max_voltage_drop=max_voltage_drop, max_dc_loss=max_dc_loss, strings=st.session_state.roof_groups)
 for warning in design.get("input_warnings", []):
+    if "ช่อง MPPT ที่กระแสรวมเกินข้อจำกัด" in warning:
+        continue
     st.warning(warning)
 
 with tab2:
@@ -1090,7 +1291,7 @@ with tab2:
         if st.button("ใช้ Auto-layout แทน Candidate strings") and not auto_groups.empty and auto_groups.modules.min() > 0:
             st.session_state.pending_auto_layout = pd.DataFrame([
                 ["AUTO", "Auto", f"G{i+1:02d}", int(row.modules), "AUTO",
-                 "TBC", 0, 0, "TBC", None]
+                 "TBC", 0, 0, "TBC", None, "AUTO", "AUTO"]
                 for i, row in auto_groups.iterrows()
             ], columns=ROOF_COLUMNS)
             st.rerun()
@@ -1143,7 +1344,7 @@ with tab3:
                     f"สรุปชุด {inverter_id}",
                     set_ac_kw,
                 )
-                display(set_assignments, ["assignment_status", "electrical_status"])
+                display(set_assignments, ["assignment_status", "mppt_current_status", "electrical_status"])
     st.subheader("DC Cable Calculation")
     st.caption("Voltage drop และ Power loss แสดงเป็น % • เปลี่ยนเบอร์สายในหน้า ข้อมูลตั้งต้น แล้วผลจะคำนวณใหม่")
     totals_bar(design["cables"].merge(design["strings"][["string_id", "modules", "string_kwp", "electrical_status"]], on="string_id", how="left") if not design["cables"].empty else pd.DataFrame(), "ยอดรวม String ที่ตรวจสาย DC", design.get("total_ac_kw"))

@@ -17,6 +17,8 @@ flowchart TD
     A[Start Streamlit] --> B[Load Session State]
     B --> C[Master Data: Module / Inverter]
     C --> D[หน้า 1: ข้อมูลตั้งต้น]
+    D --> D1[กรอก/Paste Candidate strings]
+    D1 --> D2[MPPT และ String: AUTO หรือระบุหมายเลข]
 
     D --> E{เลือก Inverter}
     E -->|AUTO| F[เปรียบเทียบ Inverter และหา Qty ต่ำสุด]
@@ -26,7 +28,12 @@ flowchart TD
 
     H --> I[ตรวจ String voltage / current]
     I --> J[จัด String ลง Inverter / MPPT]
-    J --> K[แสดง Candidate และผล Assigned Inverter]
+    J --> J1{MPPT current เกิน limit?}
+    J1 -->|ไม่เกิน| K[แสดง Candidate และผล Assigned Inverter]
+    J1 -->|เกิน + Qty AUTO| F2[เพิ่มจำนวน Inverter แล้วลองจัดใหม่]
+    F2 --> H
+    J1 -->|เกิน + กำหนด Qty/INV01| W[WARNING + ไฮไลท์ทุก String ใน MPPT ที่เกี่ยวข้อง]
+    W --> K
     K --> L[ตาราง Export Excel 14 / 16 คอลัมน์]
 
     C --> M[หน้า 2: Auto-layout & String]
@@ -67,21 +74,27 @@ flowchart TD
 - Tmin, Tcell,max และ voltage safety factor
 - DC/AC ratio สูงสุด
 - วัสดุและขนาดสาย DC
-- Roof layout / Candidate strings
+- Roof layout / Candidate strings รวม `inverter_override`, `mppt_override` และ `input_override`
 
-เมื่อเลือก Inverter เป็น `AUTO` โปรแกรมจะทำงานดังนี้:
+เมื่อเลือกรุ่น Inverter หรือจำนวน Inverter เป็น `AUTO` โปรแกรมจะทำงานดังนี้:
 
 1. รวมกำลัง DC จาก Candidate strings
 2. คำนวณจำนวน Inverter ขั้นต่ำจาก DC/AC ratio
 3. ทดลองจัด String ลง MPPT ของแต่ละรุ่น
-4. รับเฉพาะรุ่นที่ String ผ่านแรงดัน/กระแส, MPPT assignment ผ่าน และ DC/AC ratio ผ่าน
-5. เลือกแถวที่มีจำนวนเครื่องน้อยที่สุด โดยเรียงรองด้วย DC/AC ratio และ Inverter ID
+4. ตรวจทั้งจำนวน input และกระแสรวมของแต่ละ MPPT
+5. ถ้า MPPT current เกิน limit และจำนวนเป็น `AUTO` ให้ลองจำนวน Inverter ถัดไปจนกว่าจะจัดได้โดยทุก assignment เป็น `PASS`
+6. รับเฉพาะแผนที่ String ผ่านแรงดัน/กระแส, MPPT assignment เป็น `PASS` และ DC/AC ratio ผ่าน
+7. เลือกแผนที่มีจำนวนเครื่องน้อยที่สุด โดยเรียงรองด้วย DC/AC ratio และ Inverter ID
+
+กรณีที่ผู้ใช้กำหนดจำนวน Inverter หรือกำหนด String เป็น `INV01` ทั้งหมด ระบบจะคง physical assignment ที่หาได้ไว้แม้กระแสรวม MPPT เกิน limit และเปลี่ยนสถานะเป็น `WARNING` เพื่อให้ตรวจสอบได้ตรงจุด
 
 ผลลัพธ์หน้า 1 ประกอบด้วย:
 
 - Summary modules, DC kWp, Inverter sets และ Project DC/AC ratio
 - ตารางกรอกข้อมูล Roof layout
-- ผลการจัด Inverter ราย String
+- ผลการจัด Inverter ราย String พร้อมสถานะ MPPT current
+- แถบ `WARNING` สีแดงเมื่อกระแส MPPT เกิน limit
+- ไฮไลท์สีแดงทั้งแถวของทุก String ที่อยู่ใน Inverter/MPPT กลุ่มเดียวกับ MPPT ที่มีปัญหา
 - ตาราง Export Excel แบบ String/MPPT 14 คอลัมน์
 - ตาราง Export Excel แบบรวม Input + Assignment 16 คอลัมน์
 
@@ -255,6 +268,12 @@ Shading เท่ากัน
 MPPT total modules = จำนวนแผงต่อ String × จำนวน String ใน MPPT
 ```
 
+การจัดจริงแยกเป็น 2 ระดับ:
+
+- Engine จะพยายามเลือก physical input ที่ผ่านทั้งจำนวน input และกระแสก่อน
+- หากมี physical input แต่กระแสรวมของ MPPT เกิน `max_i_mppt_a` หรือ `max_isc_mppt_a` ระบบยังเก็บ assignment ไว้เพื่อให้ตรวจสอบได้ และกำหนด `assignment_status`/`mppt_current_status` เป็น `WARNING`
+- หน้า 1 จะขยายสถานะนี้ไปยังทุก String ที่อยู่ใน Inverter และ MPPT เดียวกัน แล้วไฮไลท์สีแดงทั้งแถวในตารางผลการจัดและตาราง Export ที่แสดงบนหน้าจอ
+
 `unassigned_strings` ในตารางเปรียบเทียบ AUTO คือจำนวนช่อง Input ที่ยังว่าง:
 
 ```text
@@ -280,6 +299,12 @@ String electrical status ทุกแถว = PASS หรือ WARNING เฉ�
 Assignment status ทุกแถว = PASS
 Actual DC/AC ratio ≤ Maximum DC/AC ratio
 ```
+
+ดังนั้น หาก 1 เครื่องจัดได้ครบทาง physical input แต่มี MPPT current warning
+จะยังไม่ถือว่าเป็นแผน `PASS` สำหรับการเลือกแบบ `AUTO` และระบบจะลองเพิ่มจำนวน
+Inverter ต่อไป ตัวอย่าง 14 String กับ SG125CX-P2 จะขยับเป็น 2 เครื่องเมื่อ 1 เครื่องมี
+MPPT current เกิน limit ส่วนกรณีผู้ใช้ล็อกจำนวนไว้ 1 เครื่อง ระบบจะแสดง assignment
+พร้อม `WARNING` และไฮไลท์ MPPT ที่เกี่ยวข้องแทนการซ่อนแถว
 
 ### 3.8 DC/AC ratio ราย Inverter
 
@@ -375,6 +400,9 @@ QA/QC checks หลัก:
 - `solar_design_package.json` — inputs, limits, strings, inverter sets และ assignments
 - `solar_string_mppt_export.xlsx` — ตารางผล String/MPPT 14 คอลัมน์
 - `solar_string_input_assignment_export.xlsx` — ตารางรวมข้อมูลกรอก 1–11 และผลจัด 12–16
+
+ตาราง Export ที่แสดงบนหน้า 1 ใช้สีแดงทั้งแถวเดียวกับตารางผลการจัด เมื่อ String อยู่ใน
+Inverter/MPPT กลุ่มที่มี `WARNING`; คอลัมน์ MPPT และ String ในตารางจึงใช้ติดตามจุดที่ต้องแก้ไขได้ทันที
 
 ## 6. การรันและทดสอบบนเครื่อง Local
 

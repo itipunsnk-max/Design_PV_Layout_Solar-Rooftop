@@ -1,13 +1,25 @@
 # Solar Rooftop String & MPPT Design Assistant
 
-Thai-first Streamlit app for preliminary Solar Rooftop string, MPPT and DC cable design.
+เครื่องมือ Streamlit สำหรับช่วยออกแบบเบื้องต้นของ Solar Rooftop ได้แก่ String, MPPT, การแบ่งชุด Inverter, สาย DC, QA/QC และข้อมูลเตรียมสำหรับ PVsyst
 
-## Architecture
+## ความสามารถหลัก
 
-- `calculation_engine.py` — pure calculation layer: voltage/current validation, MPPT grouping, DC cable calculation, QA/QC and PVsyst-preparation table.
-- `streamlit_app.py` — friendly Thai interface, inputs, visual output and exports.
-- `STREAMLIT_FLOW.md` — GitHub-readable flow diagram, Streamlit data flow and formulas used by each design step.
-- `PROGRAM_GUIDE.md` — คู่มือรายละเอียดองค์ประกอบ จุด Config การแบ่งชุด Inverter และโครงสร้างสูตร
+- เลือก Inverter และจำนวน Inverter แบบ `AUTO` หรือกำหนดเอง
+- ตรวจ String voltage/current และจัด String ลง physical Inverter, MPPT และ input
+- หากจำนวน String ทำให้กระแสรวมของ MPPT เกินข้อจำกัด ระบบจะแสดง `WARNING` พร้อมระบุ Inverter/MPPT ที่เกี่ยวข้อง
+- เมื่อเลือกจำนวน Inverter เป็น `AUTO` ระบบจะลองเพิ่มจำนวนเครื่องจนกว่าจะจัดได้โดยไม่มี MPPT current warning; เช่น 14 String กับ SG125CX-P2 จะขยับจาก 1 เป็น 2 เครื่องเมื่อ 1 เครื่องไม่พอ
+- หากผู้ใช้กำหนด Inverter 1 เครื่อง หรือกำหนด String เป็น `INV01` ทั้งหมด ระบบจะแสดงการจัดจริงไว้เพื่อให้ตรวจสอบ พร้อมคงสถานะ `WARNING` ไว้ ไม่ซ่อนปัญหา
+- ตารางผลการจัด String และตาราง Export บนหน้า 1 จะไฮไลท์สีแดงทั้งแถวของ String ที่อยู่ใน MPPT ซึ่งมีปัญหา เพื่อให้เห็นกลุ่ม String ที่ต้องแก้ไข
+- ตารางกรอกข้อมูลมีคอลัมน์ท้าย `MPPT (AUTO/ระบุ)` และ `String (AUTO/ระบุ)` รองรับ `AUTO` หรือหมายเลขช่อง
+- Paste จาก Excel รองรับรูปแบบเดิมและรูปแบบใหม่ที่เติม MPPT/String override ต่อท้าย
+
+## โครงสร้างไฟล์
+
+- `calculation_engine.py` — Calculation Engine แบบไม่พึ่ง Streamlit: master data, สูตรไฟฟ้า, String/MPPT assignment, สาย DC, QA/QC และ PVsyst preparation
+- `streamlit_app.py` — UI ภาษาไทย, Session State, ตารางกรอก/ผลลัพธ์, สี Warning/Highlight และ Export
+- `STREAMLIT_FLOW.md` — Flow การทำงาน, ลำดับการคำนวณ, เงื่อนไข AUTO และสูตรหลัก
+- `PROGRAM_GUIDE.md` — คู่มือการใช้งาน, โครงสร้างข้อมูล, Config และรูปแบบ Paste/Export
+- `test_calculation_engine.py` — Unit tests ของ Calculation Engine และกรณี 14 String ที่กระแส MPPT เกิน
 
 ## Run locally
 
@@ -16,13 +28,11 @@ python -m pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
 
-## Deploy to Streamlit Community Cloud
+## ตรวจสอบก่อนใช้งาน
 
-1. Push this project to a GitHub repository.
-2. In Streamlit Community Cloud choose **Create app**.
-3. Select the repository and set the main file to `streamlit_app.py`.
-4. Deploy. Streamlit will install `requirements.txt` automatically.
+```bash
+python -m py_compile streamlit_app.py calculation_engine.py test_calculation_engine.py
+python -m pytest -q
+```
 
-## Engineering limits
-
-This is an engineering-assistance tool. It must not replace latest official manufacturer datasheets, PVsyst, site-specific assessments, statutory requirements, or licensed-engineer approval. PAN/OND files and every field marked `REQUIRES VERIFICATION` must be checked before design issue.
+ผลลัพธ์เป็นเครื่องมือช่วยออกแบบเบื้องต้น ต้องยืนยันกับ datasheet ล่าสุดของผู้ผลิต, PAN/OND, PVsyst, ข้อมูลหน้างาน, มาตรฐาน/ข้อกำหนดการไฟฟ้า และวิศวกรผู้มีใบอนุญาตก่อนนำไปออกแบบหรือก่อสร้างจริง
