@@ -468,9 +468,13 @@ def make_input_assignment_export_frame(candidate_frame: pd.DataFrame) -> pd.Data
     export_frame = candidate_frame[[
         "roof_id", "zone", "group_id", "modules", "string_kwp",
         "inverter_override", "orientation", "tilt_deg", "azimuth_deg",
-        "shading", "one_way_m", "inverter_id", "inverter_model", "mppt_no",
-        "input_no", "mppt_total_modules",
+        "shading", "one_way_m", "mppt_no", "input_no", "mppt_total_modules",
+        "inverter_id", "inverter_model",
     ]].copy()
+    for integer_column in ("mppt_no", "input_no", "mppt_total_modules"):
+        export_frame[integer_column] = pd.to_numeric(
+            export_frame[integer_column], errors="coerce"
+        ).astype("Int64")
     return export_frame.rename(columns={
         "roof_id": "Roof ID",
         "zone": "Zone",
@@ -482,7 +486,7 @@ def make_input_assignment_export_frame(candidate_frame: pd.DataFrame) -> pd.Data
         "tilt_deg": "Tilt (deg)",
         "azimuth_deg": "Azimuth (deg)",
         "shading": "Shading",
-        "one_way_m": "One-way cable (m) optional",
+        "one_way_m": "One-way cable (m)",
         "inverter_id": "Assigned Inverter",
         "inverter_model": "Inverter model",
         "mppt_no": "MPPT",
@@ -1328,36 +1332,10 @@ with tab1:
         },
     )
 
-    st.subheader("ตาราง Export Excel — String / MPPT")
-    st.caption(
-        "จัดลำดับคอลัมน์ตามแบบ Export: Roof ID, Zone, String ID, Modules, DC (kWp), "
-        "Assigned Inverter, Inverter model, MPPT, String, MPPT total modules, "
-        "Tilt, Azimuth, Shading และ One-way cable"
-    )
-    string_export_frame = make_string_export_frame(candidate_editor_frame)
-    string_export_styler = (
-        string_export_frame.style
-        .format({"DC (kWp)": "{:,.3f}"}, na_rep="-")
-        .apply(assignment_row_style, axis=1)
-        .map(inverter_cell_style, subset=["Assigned Inverter"])
-        .apply(
-            lambda row: warning_index_row_style(row, current_warning_rows),
-            axis=1,
-        )
-    )
-    st.dataframe(string_export_styler, width="stretch", hide_index=True)
-    st.download_button(
-        "⬇️ Export ตาราง String / MPPT เป็น Excel",
-        data=string_export_xlsx_bytes(string_export_frame),
-        file_name="solar_string_mppt_export.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-    )
-
     st.subheader("ตาราง Export Excel — Input + Assignment (16 คอลัมน์)")
     st.caption(
-        "ตารางรวมตามแบบล่าสุด: 1–11 คือข้อมูลจากตารางกรอก และ 12–16 คือผล Assigned Inverter / MPPT "
-        "สำหรับใช้ส่งต่อ Excel"
+        "ตารางรวมข้อมูลจากตารางกรอกและผล Assigned Inverter / MPPT สำหรับใช้ส่งต่อ Excel "
+        "โดยวาง One-way cable ก่อน MPPT และวาง MPPT/String/MPPT total modules ก่อน Assigned Inverter"
     )
     input_assignment_export_frame = make_input_assignment_export_frame(candidate_editor_frame)
     input_assignment_export_styler = (
